@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { configFromEnv } from "../src/config";
 import { AUTO_MODEL, startProxy, summarizeCacheRun } from "../src/proxy";
 import { buildRequest, type Route, type RoutingInput } from "../src/router";
+import { REDACTED, REDACTED_ERROR } from "../src/history";
 import type { CodexBody, Item } from "../src/types";
 
 function result(input: RoutingInput, tier: string, effort: string) {
@@ -86,7 +87,7 @@ test("disabled recent context is omitted and a failed JEV call keeps the current
     expect(forwarded?.model).toBe("chatgpt-6-luna");
     const record = JSON.parse((await readFile(proxy.logPath, "utf8")).trim());
     expect(record.decision.reason).toBe("jev-unavailable/no-change");
-    expect(record.jev.error).toBe("timeout");
+    expect(record.jev.error).toBe("[routing error]");
   } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -798,5 +799,84 @@ test("explicit model requests remain untouched with startup tier configured", as
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-6-luna", input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(captured[0].body.model).toBe("gpt-6-luna");
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("sensitivity questions are in JEV request and sensitive content is redacted in JSONL", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-redact-"));
+  const inputs: RoutingInput[] = [];
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [
+      { slug: "gpt-6-luna", display_name: "Luna", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }] },
+    ] });
+    const body = await req.json() as CodexBody;
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const route: Route = async input => {
+    inputs.push(input);
+    return {
+      request: buildRequest(input), ms: 1, response: {
+        model: "fake-jev", usage: { input_tokens: 1, output_tokens: 1 },
+        answers: {
+          model: { type: "choice" as const, choice: "fast", confidence: 0.9, probabilities: {} },
+          reasoning_effort: { type: "choice" as const, choice: "low", confidence: 0.9, probabilities: {} },
+          current_message_sensitive: { type: "choice" as const, choice: "sensitive", confidence: 0.95, probabilities: {} },
+          previous_user_message_sensitive: { type: "choice" as const, choice: "not_sensitive", confidence: 0.85, probabilities: {} },
+          previous_assistant_response_sensitive: { type: "choice" as const, choice: "sensitive", confidence: 0.90, probabilities: {} },
+        },
+      },
+    };
+  };
+  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const local = `http://127.0.0.1:${proxy.port}`;
+  try {
+    await fetch(`${local}/models`).then(r => r.json());
+    await fetch(`${local}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "old request" }, { role: "assistant", content: "old response" }, { role: "user", content: "my password is hunter2" }] }) }).then(r => r.text());
+
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].prompt).toBe("my password is hunter2");
+
+    const request = buildRequest(inputs[0]);
+    expect(request.questions).toHaveProperty("current_message_sensitive");
+    expect(request.questions).toHaveProperty("previous_user_message_sensitive");
+    expect(request.questions).toHaveProperty("previous_assistant_response_sensitive");
+
+    const records = (await readFile(proxy.logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records).toHaveLength(1);
+    expect(records[0].prompt).toBe(REDACTED);
+    expect(records[0].jev.request.state.request).toBe(REDACTED);
+    expect(records[0].jev.request.state.recent_context.previous_user_request).toBe("old request");
+    expect(records[0].jev.request.state.recent_context.previous_assistant_excerpt).toBe(REDACTED);
+
+    expect(records[0].decision.tier).toBe("fast");
+    expect(records[0].decision.model).toBe("gpt-6-luna");
+    expect(records[0].jev.ms).toBe(1);
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("JEV error in JSONL is replaced with safe category", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-error-redact-"));
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [
+      { slug: "gpt-6-luna", display_name: "Luna", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }] },
+    ] });
+    const body = await req.json() as CodexBody;
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const route: Route = async input => ({
+    request: buildRequest(input), response: null, error: "Error processing: my password is hunter2", ms: 100,
+  });
+  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  try {
+    await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
+    await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "test" }] }) }).then(r => r.text());
+
+    const records = (await readFile(proxy.logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records).toHaveLength(1);
+    expect(records[0].jev.error).toBe(REDACTED_ERROR);
+    expect(records[0].jev.error).not.toContain("hunter2");
+    expect(records[0].prompt).toBe(REDACTED);
   } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
 });

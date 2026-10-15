@@ -660,6 +660,25 @@ Logs contain user prompts and routing payloads (including optional recent contex
 
 Set `CODING_ROUTER_LOG_RETENTION_DAYS` to a positive number in the process environment or `~/.coding-router-jev.env` to enable startup cleanup. When the launcher starts, session JSONL files in the log directory whose modification time is older than the configured number of days are deleted. New logs for Codex, Claude, and Pi use `jev-*.jsonl`. Cleanup also recognizes legacy files for the launching agent; unrelated files and directories are never touched. If the setting is missing, blank, invalid, zero, or negative, no logs are deleted. Cleanup runs once at startup; there is no background timer. If an individual stale file cannot be removed, the error is logged and the launcher continues normally.
 
+### Log redaction
+
+JSONL routing logs are conditionally redacted before being written to disk. The existing JEV routing request includes three sensitivity classification questions — one for the current user message, one for the previous user message, and one for the previous assistant response. Each question asks JEV to classify whether the field contains passwords, API keys, tokens, credentials, personal data, or other confidential content.
+
+**Redaction behavior:**
+
+- When JEV classifies a field as `not_sensitive` with sufficient confidence (at or above `CODING_ROUTER_MIN_CONFIDENCE`), the original text is preserved in the JSONL log.
+- In all other cases — `sensitive` classification, low confidence, missing or invalid answers, JEV unavailability, request cancellation, or any unexpected state — the text is replaced with `[redacted: sensitive or unclassified content]`. This fail-closed design ensures that uncertain or unclassified content is never persisted.
+- Error messages from routing failures are replaced with `[routing error]` to prevent prompt content from leaking through error strings.
+- Redaction applies consistently to the `prompt` field, `jev.request.state.request`, and the `recent_context` sub-fields for all three agents (Codex, Claude, and Pi).
+- Absent prior-context fields remain absent; redaction does not add fields that were not originally present.
+- The live request and routing objects used for model selection are never mutated; sanitization operates on a copy created for logging only.
+
+**Limitations:**
+
+- Sensitivity classification is best-effort model-based classification, not a guarantee of detecting every secret or sensitive value. Unknown secret formats or subtle personal data may not be caught.
+- Historical logs written before this feature are not retroactively redacted.
+- JEV still receives the full message text for routing classification. Redaction applies only to local log persistence.
+
 ## Active session log queries (jev-logs skill)
 
 The `jev-logs` Codex skill lets you ask questions about the current routing session. On startup, the launcher installs the skill at `$CODEX_HOME/skills/jev-logs/SKILL.md` (default: `~/.codex/skills/jev-logs/SKILL.md`) and sets `JEV_SESSION_LOG` so queries search only the active session.

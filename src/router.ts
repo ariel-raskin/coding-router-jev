@@ -19,6 +19,15 @@ const EFFORT_GUIDANCE: Record<string, string> = {
   max: "Maximum reasoning for the hardest problems when the selected model supports it.",
   ultra: "The most intensive reasoning for exceptional difficulty when the selected model supports it.",
 };
+const SENSITIVITY_INSTRUCTIONS = "Classify whether the provided field contains sensitive content such as passwords, API keys, tokens, credentials, secrets, personal or private data (names, addresses, phone numbers, emails, financial data), or confidential business information. Classify the content only; do not excerpt or explain it.";
+const SENSITIVITY_CHOICES = { sensitive: "The field contains or likely contains sensitive content.", not_sensitive: "The field does not contain sensitive content." } as const;
+
+export type SensitivityAnswers = {
+  current_message_sensitive?: { type: string; choice: string; confidence: number };
+  previous_user_message_sensitive?: { type: string; choice: string; confidence: number };
+  previous_assistant_response_sensitive?: { type: string; choice: string; confidence: number };
+};
+
 export type CallerOptions = { signal?: AbortSignal };
 export type RoutingInput = {
   prompt: string;
@@ -64,6 +73,9 @@ export function buildRequest(input: RoutingInput): SystemOneRequest {
         keep: "Keep the current effort if compatible with the selected model; otherwise use that model's default.",
         ...Object.fromEntries(efforts.map(effort => [effort, EFFORT_GUIDANCE[effort] ?? `${effort}: provider-specific effort; choose only when its meaning is known and the selected model supports it.`])),
       }),
+      current_message_sensitive: choice(SENSITIVITY_INSTRUCTIONS, SENSITIVITY_CHOICES),
+      ...(input.recentContext?.previous_user_request ? { previous_user_message_sensitive: choice(SENSITIVITY_INSTRUCTIONS, SENSITIVITY_CHOICES) } : {}),
+      ...(input.recentContext?.previous_assistant_excerpt ? { previous_assistant_response_sensitive: choice(SENSITIVITY_INSTRUCTIONS, SENSITIVITY_CHOICES) } : {}),
     },
   };
 }

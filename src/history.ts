@@ -1,8 +1,12 @@
 import { appendFileSync, mkdirSync, chmodSync, readdirSync, lstatSync, unlinkSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { SensitivityAnswers } from "./router";
 
 export const DEFAULT_LOG_DIR = join(tmpdir(), "coding-router-jev");
+
+export const REDACTED = "[redacted: sensitive or unclassified content]";
+export const REDACTED_ERROR = "[routing error]";
 
 export type AgentPrefix = "codex" | "pi" | "claude";
 const SUPPORTED_PREFIXES: ReadonlySet<AgentPrefix> = new Set<AgentPrefix>(["codex", "pi", "claude"]);
@@ -43,6 +47,47 @@ export function cleanupStaleLogs(directory: string, retentionDays: number, agent
   }
 }
 
+function isNotSensitive(answer: { type?: string; choice?: string; confidence?: number } | undefined, minConfidence: number): boolean {
+  if (!answer) return false;
+  return answer.type === "choice"
+    && answer.choice === "not_sensitive"
+    && typeof answer.confidence === "number"
+    && Number.isFinite(answer.confidence)
+    && answer.confidence >= minConfidence
+    && answer.confidence <= 1;
+}
+
+export function sanitizeRecord(
+  record: Record<string, any>,
+  classification: SensitivityAnswers | undefined,
+  minConfidence: number,
+): Record<string, any> {
+  const copy = JSON.parse(JSON.stringify(record));
+
+  if (!isNotSensitive(classification?.current_message_sensitive, minConfidence)) {
+    if (copy.prompt !== undefined) copy.prompt = REDACTED;
+    if (copy.jev?.request?.state?.request !== undefined) copy.jev.request.state.request = REDACTED;
+  }
+
+  if (copy.jev?.request?.state?.recent_context?.previous_user_request !== undefined) {
+    if (!isNotSensitive(classification?.previous_user_message_sensitive, minConfidence)) {
+      copy.jev.request.state.recent_context.previous_user_request = REDACTED;
+    }
+  }
+
+  if (copy.jev?.request?.state?.recent_context?.previous_assistant_excerpt !== undefined) {
+    if (!isNotSensitive(classification?.previous_assistant_response_sensitive, minConfidence)) {
+      copy.jev.request.state.recent_context.previous_assistant_excerpt = REDACTED;
+    }
+  }
+
+  if (copy.jev?.error !== undefined) {
+    copy.jev.error = REDACTED_ERROR;
+  }
+
+  return copy;
+}
+
 export function sessionHistory(session: string, directory = DEFAULT_LOG_DIR, agent: AgentPrefix = "codex") {
   if (!SUPPORTED_PREFIXES.has(agent)) {
     throw new Error(`Unsupported agent prefix: ${agent}. Supported: ${[...SUPPORTED_PREFIXES].join(", ")}`);
@@ -72,9 +117,10 @@ export function sessionHistory(session: string, directory = DEFAULT_LOG_DIR, age
         console.error("[Jev] could not update routing history");
       }
     },
-    append(record: unknown) {
+    append(record: unknown, classification?: SensitivityAnswers, minConfidence?: number) {
       try {
-        appendFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+        const toWrite = minConfidence !== undefined ? sanitizeRecord(record as Record<string, any>, classification, minConfidence) : record;
+        appendFileSync(path, `${JSON.stringify(toWrite)}\n`, { mode: 0o600 });
         chmodSync(path, 0o600);
       } catch { console.error("[Jev] could not write routing history"); }
     },

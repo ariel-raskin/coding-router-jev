@@ -350,7 +350,7 @@ test("failed JEV call keeps current model and logs the error", async () => {
     expect(notices[0]).toContain("JEV/unavailable");
     expect(captured[0].model).toBe(configFromEnv({}).claudeModels.fast);
     const record = JSON.parse((await readFile(proxy.logPath, "utf8")).trim());
-    expect(record.jev.error).toBe("timeout");
+    expect(record.jev.error).toBe("[routing error]");
   } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
 });
 

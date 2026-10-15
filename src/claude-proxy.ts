@@ -3,6 +3,7 @@ import type { Config } from "./config";
 import { hash } from "./context";
 import { decide, decisionLabel, checkEligibility } from "./policy";
 import { buildRequest, createRouter, type Route, type RoutingResult } from "./router";
+import type { SensitivityAnswers } from "./router";
 import { formatFeedback, type FeedbackValues } from "./feedback";
 import { cleanupStaleLogs, DEFAULT_LOG_DIR, sessionHistory } from "./history";
 import { TIERS, type Candidate, type RecentContext, type Tier } from "./types";
@@ -250,7 +251,8 @@ export function startClaudeProxy(config: Config, options: { route?: Route; upstr
         state.notice = notice;
         state.noticeKey = noticeKey;
 
-        history.append({ id, at: new Date().toISOString(), conversation: key, turn: turnKey, prompt: turn.prompt, jev: result, previous: { tier: currentTier, model: currentModel }, decision: { ...decision, model: selected.id, effort: effectiveEffort ?? null }, cache });
+        history.append({ id, at: new Date().toISOString(), conversation: key, turn: turnKey, prompt: turn.prompt, jev: result, previous: { tier: currentTier, model: currentModel }, decision: { ...decision, model: selected.id, effort: effectiveEffort ?? null }, cache },
+          result.response?.answers as SensitivityAnswers | undefined, config.minConfidence);
       } else {
         // Same-turn continuation or non-user-message: reuse existing notice
         if (turn) {

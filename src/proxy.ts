@@ -5,8 +5,7 @@ import { applyEffort, type EffortState } from "./effort";
 import { DEFAULT_STATUS_FORMAT, formatFeedback, type FeedbackValues } from "./feedback";
 import { cleanupStaleLogs, DEFAULT_LOG_DIR, sessionHistory } from "./history";
 import { decide, decisionLabel } from "./policy";
-import { buildRequest, createRouter, type Route, type RoutingResult } from "./router";
-import type { SensitivityAnswers } from "./router";
+import { buildRequest, createRouter, type Route, type RoutingResult, type SensitivityAnswers } from "./router";
 import { observeStream, type Usage } from "./stream";
 import { TIERS, type Candidate, type CodexBody, type Tier } from "./types";
 

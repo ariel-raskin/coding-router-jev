@@ -1,6 +1,5 @@
 import { configFromEnv, loadEnv, type Config } from "./config";
-import { createRouter, buildRequest, type CallerOptions, type Route, type RoutingResult } from "./router";
-import type { SensitivityAnswers } from "./router";
+import { createRouter, buildRequest, type CallerOptions, type Route, type RoutingResult, type SensitivityAnswers } from "./router";
 import { decide, decisionLabel } from "./policy";
 import { TIERS, type Candidate, type Tier, type ContextEvidence } from "./types";
 import { formatFeedback, formatStatus, type FeedbackValues } from "./feedback";

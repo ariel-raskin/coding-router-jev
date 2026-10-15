@@ -11,7 +11,7 @@ import {
   type AdapterResult,
   type AdapterState,
 } from "../src/pi-extension";
-import type { RoutingResult } from "../src/router";
+import type { RoutingResult, Route } from "../src/router";
 
 const DEFAULT_MODELS: PiModelInfo[] = [
   { provider: "openai-codex", modelId: "gpt-6-luna", displayName: "Luna", contextWindow: 200_000, thinkingLevels: ["off", "low", "medium"], authenticated: true },
@@ -593,9 +593,11 @@ describe("validateSavedState edge cases", () => {
 });
 
 describe("history and feedback integration", () => {
-  function fakeHistory(): { path: string; append: (record: unknown) => void; records: unknown[] } {
+  function fakeHistory(): { path: string; append: (record: unknown, classification?: unknown, minConfidence?: number) => void; records: unknown[]; classifications: unknown[]; confidences: (number | undefined)[] } {
     const records: unknown[] = [];
-    return { path: "/tmp/test.jsonl", append: (r) => records.push(r), records };
+    const classifications: unknown[] = [];
+    const confidences: (number | undefined)[] = [];
+    return { path: "/tmp/test.jsonl", append: (r, c, m) => { records.push(r); classifications.push(c); confidences.push(m); }, records, classifications, confidences };
   }
 
   test("user resolve appends decision record to history", async () => {
@@ -625,6 +627,40 @@ describe("history and feedback integration", () => {
     expect(Object.keys(exchange.request)).toEqual([]);
     expect(exchange.response?.answers?.model).toBeDefined();
     expect(exchange.ms).toBeDefined();
+  });
+
+  test("user resolve passes sensitivity answers and minConfidence to history.append", async () => {
+    const hist = fakeHistory();
+    const sensitivityAnswers = {
+      current_message_sensitive: { type: "choice" as const, choice: "sensitive", confidence: 0.95, probabilities: {} },
+      previous_user_message_sensitive: { type: "choice" as const, choice: "not_sensitive", confidence: 0.85, probabilities: {} },
+    };
+    const route: Route = async input => ({
+      request: {} as any, ms: 5, response: {
+        model: "fake-jev", usage: { input_tokens: 1, output_tokens: 1 },
+        answers: {
+          model: { type: "choice" as const, choice: "fast", confidence: 0.9, probabilities: {} },
+          reasoning_effort: { type: "choice" as const, choice: "medium", confidence: 0.9, probabilities: {} },
+          ...sensitivityAnswers,
+        },
+      },
+    });
+    const adapter = createPiAdapter({
+      config: defaultConfig(),
+      route,
+      registry: fakeRegistry(DEFAULT_MODELS),
+      clamp: fakeClamp(DEFAULT_LEVELS),
+      history: hist,
+      sessionId: "test-sens",
+    });
+    await adapter.resolveModel({ reason: "user", text: "my password is hunter2" });
+    expect(hist.records).toHaveLength(1);
+    expect(hist.classifications).toHaveLength(1);
+    expect(hist.confidences).toHaveLength(1);
+    const classification = hist.classifications[0] as Record<string, unknown>;
+    expect(classification).toHaveProperty("current_message_sensitive");
+    expect(classification).toHaveProperty("previous_user_message_sensitive");
+    expect(hist.confidences[0]).toBe(defaultConfig().minConfidence);
   });
 
   test("continuation does not append to history", async () => {

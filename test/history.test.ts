@@ -445,4 +445,33 @@ describe("sanitizeRecord", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("exact confidence boundary (confidence === minConfidence) preserves text", () => {
+    const classification = {
+      current_message_sensitive: { type: "choice", choice: "not_sensitive", confidence: 0.3 },
+    };
+    const result = sanitizeRecord(baseRecord, classification as any, 0.3);
+    expect(result.prompt).toBe(baseRecord.prompt);
+    expect(result.jev.request.state.request).toBe(baseRecord.jev.request.state.request);
+  });
+
+  test("confidence just below threshold redacts", () => {
+    const classification = {
+      current_message_sensitive: { type: "choice", choice: "not_sensitive", confidence: 0.29 },
+    };
+    const result = sanitizeRecord(baseRecord, classification as any, 0.3);
+    expect(result.prompt).toBe(REDACTED);
+  });
+
+  test("independent redaction: previous assistant sensitive only", () => {
+    const classification = {
+      current_message_sensitive: { type: "choice", choice: "not_sensitive", confidence: 0.85 },
+      previous_user_message_sensitive: { type: "choice", choice: "not_sensitive", confidence: 0.85 },
+      previous_assistant_response_sensitive: { type: "choice", choice: "sensitive", confidence: 0.95 },
+    };
+    const result = sanitizeRecord(baseRecord, classification as any, 0.3);
+    expect(result.prompt).toBe(baseRecord.prompt);
+    expect(result.jev.request.state.recent_context.previous_user_request).toBe(baseRecord.jev.request.state.recent_context.previous_user_request);
+    expect(result.jev.request.state.recent_context.previous_assistant_excerpt).toBe(REDACTED);
+  });
 });

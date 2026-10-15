@@ -5,7 +5,7 @@ import { applyEffort, type EffortState } from "./effort";
 import { DEFAULT_STATUS_FORMAT, formatFeedback, type FeedbackValues } from "./feedback";
 import { cleanupStaleLogs, DEFAULT_LOG_DIR, sessionHistory } from "./history";
 import { decide, decisionLabel } from "./policy";
-import { buildRequest, createRouter, type Route, type RoutingResult } from "./router";
+import { buildRequest, createRouter, type Route, type RoutingResult, type SensitivityAnswers } from "./router";
 import { observeStream, type Usage } from "./stream";
 import { TIERS, type Candidate, type CodexBody, type Tier } from "./types";
 
@@ -138,7 +138,8 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
         if (notice !== undefined) options.onNotice?.(notice);
         state.notice = notice;
         state.noticeKey = noticeKey;
-        history.append({ id, at: new Date().toISOString(), conversation: key, turn: turnKey, prompt: turn.prompt, jev: result, previous: { tier: currentTier, model: currentModel, effort: previousEffort ?? null }, decision: { ...decision, model: selected.id, effort: effort ?? null, effort_update_preserves_prefix: preserved }, cache });
+        history.append({ id, at: new Date().toISOString(), conversation: key, turn: turnKey, prompt: turn.prompt, jev: result, previous: { tier: currentTier, model: currentModel, effort: previousEffort ?? null }, decision: { ...decision, model: selected.id, effort: effort ?? null, effort_update_preserves_prefix: preserved }, cache },
+          result.response?.answers as SensitivityAnswers | undefined, config.minConfidence);
       } else if (!compact) {
         applyEffort(body, state.effort, state.model, state.effort.effort, turn?.anchor);
         if (turn) { notice = state.notice; noticeKey = state.noticeKey; }

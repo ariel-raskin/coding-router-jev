@@ -1,5 +1,5 @@
 import { configFromEnv, loadEnv, type Config } from "./config";
-import { createRouter, buildRequest, type CallerOptions, type Route, type RoutingResult } from "./router";
+import { createRouter, buildRequest, type CallerOptions, type Route, type RoutingResult, type SensitivityAnswers } from "./router";
 import { decide, decisionLabel } from "./policy";
 import { TIERS, type Candidate, type Tier, type ContextEvidence } from "./types";
 import { formatFeedback, formatStatus, type FeedbackValues } from "./feedback";
@@ -223,7 +223,7 @@ export function reconcileState(
 
 export type PiHistoryHandle = {
   path: string;
-  append(record: unknown): void;
+  append(record: unknown, classification?: SensitivityAnswers, minConfidence?: number): void;
   update?(id: string, update: (record: Record<string, any>) => Record<string, any>): void;
 };
 
@@ -241,6 +241,7 @@ type PiDecisionLogMeta = {
   jevResponse?: unknown;
   jevError?: string;
   jevAnswers?: unknown;
+  sensitivityAnswers?: SensitivityAnswers;
   previousTier?: string;
   previousModel?: string;
   previousEffort?: string | null;
@@ -478,7 +479,7 @@ export function createPiAdapter(options: CreateAdapterOptions) {
     const jevUsage = result.response?.usage as { input_tokens?: number; output_tokens?: number } | undefined;
     const jevAnswers = result.response?.answers;
     return buildResult(selProvider, selModelId, effort, selected.tier, !!result.response, decisionLabel(decision.reason), confidence,
-      { ...baseMeta, jevResult: result, requestedEffort: desiredEffort, jevUsage, jevMs: result.ms, jevAnswers });
+      { ...baseMeta, jevResult: result, requestedEffort: desiredEffort, jevUsage, jevMs: result.ms, jevAnswers, sensitivityAnswers: result.response?.answers as SensitivityAnswers | undefined });
   }
 
   function buildResult(
@@ -534,7 +535,7 @@ export function createPiAdapter(options: CreateAdapterOptions) {
         ...(meta.capacityReason ? { capacity_reason: meta.capacityReason } : {}),
         ...(meta.cache ? { cache: meta.cache } : {}),
       };
-      history.append(record);
+      history.append(record, meta.sensitivityAnswers, config.minConfidence);
     }
 
     if (onNotify && meta?.reason === "user" && decision !== undefined) {

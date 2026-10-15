@@ -68,6 +68,29 @@ test("recent context is bounded text and tool continuations do not start a new t
   expect(newTurn(body)).toBeUndefined();
 });
 
+test("JEV request includes sensitivity classification questions for present fields", () => {
+  const recentContext = { previous_user_request: "prior user text", previous_assistant_excerpt: "prior assistant text" };
+  const request = buildRequest({ prompt: "my password is hunter2", currentTier: "fast", currentModel: candidates[0].id, contextTokens: 1000, candidates, recentContext });
+  expect(request.questions.current_message_sensitive.type).toBe("choice");
+  expect(request.questions.previous_user_message_sensitive.type).toBe("choice");
+  expect(request.questions.previous_assistant_response_sensitive.type).toBe("choice");
+});
+
+test("JEV request omits prior sensitivity questions when recent context is absent", () => {
+  const request = buildRequest({ prompt: "hello", currentTier: "fast", currentModel: candidates[0].id, contextTokens: 1000, candidates });
+  expect(request.questions.current_message_sensitive.type).toBe("choice");
+  expect(request.questions).not.toHaveProperty("previous_user_message_sensitive");
+  expect(request.questions).not.toHaveProperty("previous_assistant_response_sensitive");
+});
+
+test("JEV request omits assistant sensitivity question when only user prior is present", () => {
+  const recentContext = { previous_user_request: "prior user only" };
+  const request = buildRequest({ prompt: "test", currentTier: "fast", currentModel: candidates[0].id, contextTokens: 1000, candidates, recentContext });
+  expect(request.questions.current_message_sensitive.type).toBe("choice");
+  expect(request.questions.previous_user_message_sensitive.type).toBe("choice");
+  expect(request.questions).not.toHaveProperty("previous_assistant_response_sensitive");
+});
+
 test("JEV request explains tier, effort, task scope, and cache semantics", () => {
   const request = buildRequest({ prompt: "debug", currentTier: "fast", currentModel: candidates[0].id, contextTokens: 50000, candidates });
   expect(request.questions.reasoning_required.type).toBe("score");

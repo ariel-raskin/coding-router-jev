@@ -8,6 +8,14 @@ export const ENV_FILE = join(homedir(), ".coding-router-jev.env");
 
 export type ModelMap = Record<Tier, string>;
 
+/** Environment variable holding each tier's Codex model (exact ID or `family:latest` alias). */
+export const CODEX_MODEL_ENV_KEYS: Record<Tier, string> = {
+  fast: "CODING_ROUTER_FAST_MODEL_CODEX",
+  balanced: "CODING_ROUTER_BALANCED_MODEL_CODEX",
+  strong: "CODING_ROUTER_STRONG_MODEL_CODEX",
+  long: "CODING_ROUTER_LONG_MODEL_CODEX",
+};
+
 export type Config = {
   codexModels: ModelMap;
   piModels: ModelMap;
@@ -50,10 +58,10 @@ export function configFromEnv(environment: Record<string, string | undefined> = 
   const longModelEnabled = value("CODING_ROUTER_LONG_MODEL_ENABLE", "false") === "true";
   return {
     codexModels: {
-      fast: value("CODING_ROUTER_FAST_MODEL_CODEX", "chatgpt-6-luna"),
-      balanced: value("CODING_ROUTER_BALANCED_MODEL_CODEX", "chatgpt-6.1-sol"),
-      strong: value("CODING_ROUTER_STRONG_MODEL_CODEX", "chatgpt-6.1-sol"),
-      long: value("CODING_ROUTER_LONG_MODEL_CODEX", "chatgpt-6-astra"),
+      fast: value(CODEX_MODEL_ENV_KEYS.fast, "chatgpt-6-luna"),
+      balanced: value(CODEX_MODEL_ENV_KEYS.balanced, "chatgpt-6.1-sol"),
+      strong: value(CODEX_MODEL_ENV_KEYS.strong, "chatgpt-6.1-sol"),
+      long: value(CODEX_MODEL_ENV_KEYS.long, "chatgpt-6-astra"),
     },
     piModels: {
       fast: value("CODING_ROUTER_FAST_MODEL_PI", "openai-codex/gpt-6-luna"),

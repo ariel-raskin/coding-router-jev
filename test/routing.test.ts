@@ -314,3 +314,30 @@ test("decide accepts extra aliases for agent-specific override keywords", () => 
   // Built-in aliases still work
   expect(decide("use Luna", undefined, undefined, "strong", claudeCandidates, 0.3, aliases).tier).toBe("fast");
 });
+
+test("candidatesFor resolves latest alias tiers from the catalog with its metadata", () => {
+  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_BALANCED_MODEL_CODEX: "sol:latest", CODING_ROUTER_STRONG_MODEL_CODEX: "sol:latest" });
+  const catalog = new Map([
+    ["gpt-6.10-luna", { slug: "gpt-6.10-luna", display_name: "Luna", context_window: 200_000, default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] }],
+    ["gpt-6.9-sol", { slug: "gpt-6.9-sol", display_name: "Sol", supported_reasoning_levels: [{ effort: "high" }] }],
+  ]);
+  const result = candidatesFor(config, catalog as never);
+  expect(result.find(c => c.tier === "fast")).toMatchObject({ id: "gpt-6.10-luna", capacity: { contextWindow: 200_000 }, defaultEffort: "medium" });
+  expect(result.find(c => c.tier === "balanced")!.id).toBe("gpt-6.9-sol");
+  expect(result.map(c => c.id)).not.toContain("luna:latest");
+});
+
+test("candidatesFor prefers a pinned latest resolution over a newer catalog entry", () => {
+  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" });
+  const catalog = new Map([
+    ["gpt-6.9-luna", { slug: "gpt-6.9-luna", display_name: "gpt-6.9-luna", supported_reasoning_levels: [{ effort: "low" }] }],
+    ["gpt-6.10-luna", { slug: "gpt-6.10-luna", display_name: "gpt-6.10-luna", supported_reasoning_levels: [{ effort: "low" }] }],
+  ]);
+  const result = candidatesFor(config, catalog as never, new Map([["luna", "gpt-6.9-luna"]]));
+  expect(result.find(c => c.tier === "fast")!.id).toBe("gpt-6.9-luna");
+});
+
+test("candidatesFor excludes a disabled Long latest alias", () => {
+  const config = configFromEnv({ CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest" });
+  expect(candidatesFor(config, new Map()).map(c => c.tier)).toEqual(["fast", "balanced", "strong"]);
+});

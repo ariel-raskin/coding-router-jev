@@ -501,10 +501,10 @@ On **Windows**, `~` resolves to `%USERPROFILE%` (typically `C:\Users\<name>`), s
 | `TYPESAFE_API_KEY` | Key read directly by the TypeSafe SDK |
 | `TYPESAFE_BASE_URL` | Optional SDK endpoint override |
 | `TYPESAFE_DEFAULT_MODEL` | Optional JEV model override; otherwise the SDK default |
-| `CODING_ROUTER_FAST_MODEL_CODEX` | `chatgpt-6-luna` |
-| `CODING_ROUTER_BALANCED_MODEL_CODEX` | `chatgpt-6.1-sol` |
-| `CODING_ROUTER_STRONG_MODEL_CODEX` | `chatgpt-6.1-sol` |
-| `CODING_ROUTER_LONG_MODEL_CODEX` | `chatgpt-6-astra` |
+| `CODING_ROUTER_FAST_MODEL_CODEX` | `chatgpt-6-luna`; or opt-in `luna:latest` (see below) |
+| `CODING_ROUTER_BALANCED_MODEL_CODEX` | `chatgpt-6.1-sol`; or opt-in `sol:latest` |
+| `CODING_ROUTER_STRONG_MODEL_CODEX` | `chatgpt-6.1-sol`; or opt-in `sol:latest` |
+| `CODING_ROUTER_LONG_MODEL_CODEX` | `chatgpt-6-astra`; or opt-in `astra:latest` |
 | `CODING_ROUTER_LONG_MODEL_ENABLE` | `false` |
 | `CODING_ROUTER_START_TIER` | `fast`; initial tier for new conversations and after restart. Allowed: `fast`, `balanced`, `strong`, `long`. Invalid or blank defaults to `fast`. `long` with Long disabled falls back to `fast`. The configured model alias for the chosen tier determines the actual startup model. |
 | `CODING_ROUTER_MIN_CONFIDENCE` | `0.30`; valid range `0`–`1`, invalid values fall back |

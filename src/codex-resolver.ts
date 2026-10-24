@@ -25,8 +25,8 @@
 export const CODEX_LATEST_FAMILIES = ["luna", "sol", "astra"] as const;
 export type CodexLatestFamily = (typeof CODEX_LATEST_FAMILIES)[number];
 
-/** Virtual router model ID; it is never a discovery candidate. */
-const VIRTUAL_MODEL_ID = "coding-router-jev";
+/** Virtual router model ID; it is never a discovery candidate. `proxy.ts` re-exports it as `AUTO_MODEL`. */
+export const VIRTUAL_MODEL_ID = "coding-router-jev";
 
 export type CatalogEntryLike = {
   slug?: unknown;
@@ -130,6 +130,8 @@ type AnalyzedEntry = {
   explicitStable: boolean;
   preview: boolean;
   superseded: boolean;
+  explicitFamily?: CodexLatestFamily;
+  familyFromId?: CodexLatestFamily;
 };
 
 function analyzeEntry(entry: CatalogEntryLike, id: string, presentIds: Set<string>): AnalyzedEntry {
@@ -157,10 +159,9 @@ function analyzeEntry(entry: CatalogEntryLike, id: string, presentIds: Set<strin
     explicitStable,
     preview,
     superseded,
-    // Family is resolved by the caller through these fields; keep them attached.
     ...(explicitFamily ? { explicitFamily } : {}),
     ...(familyFromId ? { familyFromId } : {}),
-  } as AnalyzedEntry;
+  };
 }
 
 /**
@@ -178,7 +179,7 @@ export function resolveLatestFamily(family: CodexLatestFamily, entries: readonly
   const presentIds = new Set(byId.keys());
   const eligible: AnalyzedEntry[] = [];
   for (const [id, entry] of byId) {
-    const analyzed = analyzeEntry(entry, id, presentIds) as AnalyzedEntry & { explicitFamily?: CodexLatestFamily; familyFromId?: CodexLatestFamily };
+    const analyzed = analyzeEntry(entry, id, presentIds);
     const entryFamily = analyzed.explicitFamily ?? analyzed.familyFromId;
     if (entryFamily !== family) continue;
     if (analyzed.superseded) continue;

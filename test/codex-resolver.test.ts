@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CodexLatestResolutionError, compareVersionTuples, extractCatalogEntries, isLatestAlias, parseLatestAlias, parseVersionTuple, resolveLatestFamily } from "../src/codex-resolver";
-import { AUTO_MODEL, candidatesFor } from "../src/proxy";
-import { configFromEnv } from "../src/config";
+import { AUTO_MODEL } from "../src/proxy";
 
 const entry = (slug: string, extra: Record<string, unknown> = {}) => ({ slug, display_name: slug, supported_reasoning_levels: [{ effort: "low" }], ...extra });
 
@@ -48,6 +47,22 @@ describe("resolveLatestFamily", () => {
 
   test("preview and unrelated variants are excluded", () => {
     expect(resolveLatestFamily("luna", [entry("gpt-6.11-luna-preview"), entry("gpt-6.9-luna"), entry("gpt-6.12-luna-mini")])).toBe("gpt-6.9-luna");
+  });
+
+  test("a preview explicitly advertised as current is eligible", () => {
+    expect(resolveLatestFamily("luna", [entry("gpt-6.9-luna"), entry("gpt-6.12-luna", { is_preview: true, is_latest: true })])).toBe("gpt-6.12-luna");
+  });
+
+  test("a stable marker breaks a highest-version tie deterministically", () => {
+    expect(resolveLatestFamily("luna", [entry("gpt-6.10-luna"), entry("chatgpt-6.10-luna", { is_stable: true })])).toBe("chatgpt-6.10-luna");
+  });
+
+  test("metadata-only entries without orderable versions are ambiguous, not guessed", () => {
+    let caught: unknown;
+    try { resolveLatestFamily("luna", [entry("provider-luna-a", { family: "luna" }), entry("provider-luna-b", { family: "luna" })]); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(CodexLatestResolutionError);
+    expect((caught as CodexLatestResolutionError).kind).toBe("ambiguous");
+    expect((caught as Error).message).toContain("cannot be ordered by version");
   });
 
   test("the virtual router model is never a candidate", () => {
@@ -106,30 +121,3 @@ describe("extractCatalogEntries", () => {
   });
 });
 
-describe("candidatesFor with latest aliases", () => {
-  const catalogOf = (models: Array<ReturnType<typeof entry> & Record<string, unknown>>) => new Map(models.map(model => [model.slug, model]));
-
-  test("resolves alias tiers from the catalog with its metadata", () => {
-    const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_BALANCED_MODEL_CODEX: "sol:latest", CODING_ROUTER_STRONG_MODEL_CODEX: "sol:latest" });
-    const catalog = catalogOf([
-      { slug: "gpt-6.10-luna", display_name: "Luna", context_window: 200_000, default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] },
-      { slug: "gpt-6.9-sol", display_name: "Sol", supported_reasoning_levels: [{ effort: "high" }] },
-    ]);
-    const result = candidatesFor(config, catalog as never);
-    expect(result.find(c => c.tier === "fast")).toMatchObject({ id: "gpt-6.10-luna", capacity: { contextWindow: 200_000 }, defaultEffort: "medium" });
-    expect(result.find(c => c.tier === "balanced")!.id).toBe("gpt-6.9-sol");
-    expect(result.map(c => c.id)).not.toContain("luna:latest");
-  });
-
-  test("a pinned resolution wins over a newer catalog entry", () => {
-    const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" });
-    const catalog = catalogOf([entry("gpt-6.9-luna"), entry("gpt-6.10-luna")]);
-    const result = candidatesFor(config, catalog as never, new Map([["luna", "gpt-6.9-luna"]]));
-    expect(result.find(c => c.tier === "fast")!.id).toBe("gpt-6.9-luna");
-  });
-
-  test("disabled Long alias is not among candidates", () => {
-    const config = configFromEnv({ CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest" });
-    expect(candidatesFor(config, new Map()).map(c => c.tier)).toEqual(["fast", "balanced", "strong"]);
-  });
-});

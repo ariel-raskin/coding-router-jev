@@ -1,5 +1,5 @@
 /**
- * Resolution of opt-in Codex `family:latest` aliases (issue #59).
+ * Resolution of Codex `family:latest` aliases (issue #59; default since #61).
  *
  * An alias such as `luna:latest` is router configuration only: it must never
  * be sent upstream. This module deterministically picks one exact catalog ID

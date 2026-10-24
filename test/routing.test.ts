@@ -323,7 +323,7 @@ test("decide accepts extra aliases for agent-specific override keywords", () => 
 });
 
 test("candidatesFor resolves latest alias tiers from the catalog with its metadata", () => {
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_BALANCED_MODEL_CODEX: "sol:latest", CODING_ROUTER_STRONG_MODEL_CODEX: "sol:latest" });
+  const config = configFromEnv({});
   const catalog = new Map([
     ["gpt-6.10-luna", { slug: "gpt-6.10-luna", display_name: "Luna", context_window: 200_000, default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] }],
     ["gpt-6.9-sol", { slug: "gpt-6.9-sol", display_name: "Sol", supported_reasoning_levels: [{ effort: "high" }] }],

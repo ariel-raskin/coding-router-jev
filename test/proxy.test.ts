@@ -18,6 +18,7 @@ function pinnedCodexConfig(extra: Record<string, string> = {}) {
     ...extra,
   });
 }
+
 /** Only Fast uses `luna:latest`; the other tiers are pinned so discovery stays single-family. */
 function latestFastConfig() {
   return pinnedCodexConfig({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" });
@@ -757,7 +758,7 @@ test("startup model uses catalog alias resolution with custom fast model", async
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "fast", "low"); };
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna-v2" });
+  const config = pinnedCodexConfig({ CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna-v2" });
   const proxy = startProxy(config, { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
@@ -783,7 +784,7 @@ test("startup model resolves chatgpt-6 alias to catalog gpt-6 slug", async () =>
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "balanced", "medium"); };
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_START_TIER: "balanced" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig({ CODING_ROUTER_START_TIER: "balanced" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
@@ -910,7 +911,7 @@ test("latest aliases resolve from a prior /models catalog, stay pinned across re
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_BALANCED_MODEL_CODEX: "sol:latest", CODING_ROUTER_STRONG_MODEL_CODEX: "sol:latest" });
+  const config = configFromEnv({});
   const route: Route = async input => { inputs.push(input); return result(input, "balanced", "low"); };
   const proxy = startProxy(config, { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory, onNotice: notice => notices.push(notice) });
   const local = `http://127.0.0.1:${proxy.port}`;
@@ -974,6 +975,59 @@ test("unset Codex defaults resolve latest families once, stay pinned, and appear
     const records = (await readFile(proxy.logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(records.map(record => record.decision.model)).toEqual(["gpt-6.10-sol", "gpt-6.10-sol"]);
     expect(JSON.stringify(records)).not.toContain(":latest");
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("one exact Codex ID stays pinned among default latest aliases through the proxy", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-mixed-pin-"));
+  let modelsHits = 0;
+  const captured: CodexBody[] = [];
+  const inputs: RoutingInput[] = [];
+  const notices: string[] = [];
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) { modelsHits++; return Response.json({ models: [aliasModel("gpt-6.9-luna"), aliasModel("gpt-6.1-sol"), aliasModel("gpt-6.10-sol")] }); }
+    const body = await req.json() as CodexBody;
+    captured.push(body);
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const route: Route = async input => { inputs.push(input); return result(input, "balanced", "low"); };
+  const proxy = startProxy(configFromEnv({ CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory, onNotice: notice => notices.push(notice) });
+  try {
+    await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
+    expect(modelsHits).toBe(1);
+    // Balanced keeps its pinned exact ID (canonical catalog slug); it is not upgraded to the newer sol.
+    expect(inputs[0].candidates.map(c => c.id)).toEqual(["gpt-6.9-luna", "gpt-6.1-sol", "gpt-6.10-sol"]);
+    expect(captured[0].model).toBe("gpt-6.1-sol");
+    expect(notices[0]).toContain("model: gpt-6.1-sol");
+    expect(JSON.stringify(captured)).not.toContain(":latest");
+    const records = (await readFile(proxy.logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records.map(record => record.decision.model)).toEqual(["gpt-6.1-sol"]);
+    expect(JSON.stringify(records)).not.toContain(":latest");
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("discovery failure under default latest config is actionable and forwards nothing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-default-fail-"));
+  let routeCalls = 0;
+  let responsesHits = 0;
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.10-sol")] });
+    responsesHits++;
+    return Response.json({ model: "should-not-run" });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const proxy = startProxy(configFromEnv({}), { route: async input => { routeCalls++; return result(input, "fast", "low"); }, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
+    const text = await response.text();
+    expect(response.status).toBe(502);
+    expect(text).toContain("luna:latest");
+    expect(text).toContain("CODING_ROUTER_FAST_MODEL_CODEX");
+    expect(routeCalls).toBe(0);
+    expect(responsesHits).toBe(0);
+    const logText = await readFile(proxy.logPath, "utf8").catch(() => "");
+    expect(logText).not.toContain(":latest");
   } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -1323,13 +1377,13 @@ test("an enabled Long latest alias resolves and can be selected", async () => {
   const captured: CodexBody[] = [];
   const inputs: RoutingInput[] = [];
   const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
-    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.10-luna"), aliasModel("gpt-6.10-astra")] });
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.10-luna"), aliasModel("gpt-6.10-sol"), aliasModel("gpt-6.10-astra")] });
     const body = await req.json() as CodexBody;
     captured.push(body);
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const config = pinnedCodexConfig({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest", CODING_ROUTER_LONG_MODEL_ENABLE: "true" });
+  const config = configFromEnv({ CODING_ROUTER_LONG_MODEL_ENABLE: "true" });
   const proxy = startProxy(config, { route: async input => { inputs.push(input); return result(input, "long", "low"); }, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());

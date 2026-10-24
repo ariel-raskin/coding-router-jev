@@ -38,18 +38,6 @@ describe("configuration", () => {
     });
   });
 
-  test("unset Codex models default to latest-family aliases and Long stays disabled", () => {
-    const config = configFromEnv({});
-    expect(config.codexModels).toEqual({
-      fast: "luna:latest",
-      balanced: "sol:latest",
-      strong: "sol:latest",
-      long: "astra:latest",
-    });
-    expect(config.longModelEnabled).toBe(false);
-    expect(config.startTier).toBe("fast");
-  });
-
   test("blank or whitespace Codex model values fall back to latest-family aliases", () => {
     const config = configFromEnv({
       CODING_ROUTER_FAST_MODEL_CODEX: "",

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CodexLatestResolutionError, compareVersionTuples, extractCatalogEntries, isLatestAlias, parseLatestAlias, parseVersionTuple, resolveLatestFamily } from "../src/codex-resolver";
-import { AUTO_MODEL } from "../src/proxy";
+import { CodexLatestResolutionError, compareVersionTuples, extractCatalogEntries, isLatestAlias, parseLatestAlias, parseVersionTuple, resolveLatestFamily, VIRTUAL_MODEL_ID } from "../src/codex-resolver";
 
 const entry = (slug: string, extra: Record<string, unknown> = {}) => ({ slug, display_name: slug, supported_reasoning_levels: [{ effort: "low" }], ...extra });
 
@@ -57,6 +56,10 @@ describe("resolveLatestFamily", () => {
     expect(resolveLatestFamily("luna", [entry("gpt-6.10-luna"), entry("chatgpt-6.10-luna", { is_stable: true })])).toBe("chatgpt-6.10-luna");
   });
 
+  test("two stable markers at the same highest version stay ambiguous", () => {
+    expect(() => resolveLatestFamily("luna", [entry("gpt-6.10-luna", { is_stable: true }), entry("chatgpt-6.10-luna", { is_stable: true })])).toThrow(/tie as the latest/);
+  });
+
   test("metadata-only entries without orderable versions are ambiguous, not guessed", () => {
     let caught: unknown;
     try { resolveLatestFamily("luna", [entry("provider-luna-a", { family: "luna" }), entry("provider-luna-b", { family: "luna" })]); } catch (error) { caught = error; }
@@ -66,7 +69,7 @@ describe("resolveLatestFamily", () => {
   });
 
   test("the virtual router model is never a candidate", () => {
-    expect(() => resolveLatestFamily("luna", [entry(AUTO_MODEL)])).toThrow(CodexLatestResolutionError);
+    expect(() => resolveLatestFamily("luna", [entry(VIRTUAL_MODEL_ID)])).toThrow(CodexLatestResolutionError);
   });
 
   test("missing family fails instead of falling back", () => {
@@ -114,6 +117,7 @@ describe("extractCatalogEntries", () => {
   test("supports models, data, and array payloads and rejects malformed data", () => {
     expect(extractCatalogEntries({ models: [entry("gpt-6-luna")] })).toHaveLength(1);
     expect(extractCatalogEntries({ data: [{ id: "gpt-6-luna" }] })).toHaveLength(1);
+    expect(extractCatalogEntries({ items: [entry("gpt-6-luna")] })).toHaveLength(1);
     expect(extractCatalogEntries([entry("gpt-6-luna")])).toHaveLength(1);
     expect(extractCatalogEntries({ models: "nope" })).toEqual([]);
     expect(extractCatalogEntries(null)).toEqual([]);

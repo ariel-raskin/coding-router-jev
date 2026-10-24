@@ -182,8 +182,9 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
     const visited = new Set<string>();
     let url: string | undefined = `${catalogBaseURL()}/models`;
     let totalEntries = 0;
+    let cycle = false;
     for (let page = 0; url && page < 10; page++) {
-      if (visited.has(url)) break;
+      if (visited.has(url)) { cycle = true; break; }
       visited.add(url);
       const controller = new AbortController();
       let timedOut = false;
@@ -208,10 +209,13 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
       }
       const entries = extractCatalogEntries(payload);
       totalEntries += entries.length;
-      ingestCatalog(entries, false);
+      // The catalog stays marked incomplete until every page has arrived, so
+      // a concurrent or post-failure request can never pin from partial data.
+      ingestCatalog(entries, false, true);
       url = nextCatalogURL(payload, response, url, entries, families);
     }
     // Fail closed rather than resolving from a truncated catalog.
+    if (cycle) throw actionableResolutionError(families, "catalog pagination cycle detected");
     if (url) throw actionableResolutionError(families, "catalog pagination did not complete within the page limit");
     if (totalEntries === 0) throw actionableResolutionError(families, "catalog response was empty");
     catalogIncomplete = false;
@@ -221,16 +225,18 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
     const wanted = [...new Set(families)];
     if (wanted.length === 0 || wanted.every(family => resolvedAliases.has(family))) return;
     // A catalog learned from a complete proxied /models response can pin
-    // immediately. An incomplete one (it advertised further pages) must not:
-    // fall through to paginated discovery instead of trusting it.
-    if (!catalogIncomplete) {
+    // immediately. An incomplete one (it advertised further pages, or a
+    // discovery is still paginating / previously failed mid-pagination)
+    // must not: never pin from partial data.
+    if (!discoveryPromise && !catalogIncomplete) {
       pinFromCatalog();
       if (wanted.every(family => resolvedAliases.has(family))) return;
     }
     // Otherwise make an authenticated discovery attempt with this request's
     // headers, even if an earlier (empty, incomplete, or family-missing)
-    // catalog was seen. Concurrent requests share one in-flight discovery,
-    // so they use the first request's headers until it settles.
+    // catalog was seen. Concurrent requests share and await the one
+    // in-flight discovery, so they use the first request's headers until
+    // it settles rather than pinning from its partial pages.
     if (!discoveryPromise) {
       discoveryPromise = fetchCatalog(headers, signal, wanted).finally(() => { discoveryPromise = undefined; });
     }

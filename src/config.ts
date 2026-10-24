@@ -58,10 +58,10 @@ export function configFromEnv(environment: Record<string, string | undefined> = 
   const longModelEnabled = value("CODING_ROUTER_LONG_MODEL_ENABLE", "false") === "true";
   return {
     codexModels: {
-      fast: value(CODEX_MODEL_ENV_KEYS.fast, "chatgpt-6-luna"),
-      balanced: value(CODEX_MODEL_ENV_KEYS.balanced, "chatgpt-6.1-sol"),
-      strong: value(CODEX_MODEL_ENV_KEYS.strong, "chatgpt-6.1-sol"),
-      long: value(CODEX_MODEL_ENV_KEYS.long, "chatgpt-6-astra"),
+      fast: value(CODEX_MODEL_ENV_KEYS.fast, "luna:latest"),
+      balanced: value(CODEX_MODEL_ENV_KEYS.balanced, "sol:latest"),
+      strong: value(CODEX_MODEL_ENV_KEYS.strong, "sol:latest"),
+      long: value(CODEX_MODEL_ENV_KEYS.long, "astra:latest"),
     },
     piModels: {
       fast: value("CODING_ROUTER_FAST_MODEL_PI", "openai-codex/gpt-6-luna"),

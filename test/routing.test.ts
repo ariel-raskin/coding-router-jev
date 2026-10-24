@@ -8,7 +8,14 @@ import { candidatesFor, codexArgs, codexStatusModelName, AUTO_MODEL } from "../s
 import { observeStream, type Usage } from "../src/stream";
 import type { Candidate, CodexBody, Item } from "../src/types";
 
-const candidates = candidatesFor(configFromEnv({}), new Map());
+/** Legacy fixture IDs: tests that predate latest-by-default pin every Codex tier so no discovery is triggered. */
+const pinnedCodexEnv = {
+  CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna",
+  CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol",
+  CODING_ROUTER_STRONG_MODEL_CODEX: "chatgpt-6.1-sol",
+  CODING_ROUTER_LONG_MODEL_CODEX: "chatgpt-6-astra",
+};
+const candidates = candidatesFor(configFromEnv(pinnedCodexEnv), new Map());
 test("confidence policy preserves tiers even when models are shared, with no cache guard", () => {
   expect(candidates.map(candidate => candidate.tier)).toEqual(["fast", "balanced", "strong"]);
   expect(candidates[1].id).toBe(candidates[2].id);
@@ -260,7 +267,7 @@ test("candidatesFor populates capacity from catalog context_window", () => {
     ["gpt-6-luna", { slug: "gpt-6-luna", display_name: "Luna", context_window: 200_000, supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] }],
     ["gpt-6.1-sol", { slug: "gpt-6.1-sol", display_name: "Sol", context_window: 1_000_000, supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }] }],
   ]);
-  const result = candidatesFor(configFromEnv({}), catalog as any);
+  const result = candidatesFor(configFromEnv(pinnedCodexEnv), catalog as any);
   const luna = result.find(c => c.tier === "fast")!;
   const sol = result.find(c => c.tier === "balanced")!;
   expect(luna.capacity).toEqual({ contextWindow: 200_000 });
@@ -268,7 +275,7 @@ test("candidatesFor populates capacity from catalog context_window", () => {
 });
 
 test("candidatesFor without catalog context_window has undefined capacity", () => {
-  const result = candidatesFor(configFromEnv({}), new Map());
+  const result = candidatesFor(configFromEnv(pinnedCodexEnv), new Map());
   expect(result[0].capacity).toBeUndefined();
 });
 
@@ -328,7 +335,7 @@ test("candidatesFor resolves latest alias tiers from the catalog with its metada
 });
 
 test("candidatesFor prefers a pinned latest resolution over a newer catalog entry", () => {
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" });
+  const config = configFromEnv({ ...pinnedCodexEnv, CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" });
   const catalog = new Map([
     ["gpt-6.9-luna", { slug: "gpt-6.9-luna", display_name: "gpt-6.9-luna", supported_reasoning_levels: [{ effort: "low" }] }],
     ["gpt-6.10-luna", { slug: "gpt-6.10-luna", display_name: "gpt-6.10-luna", supported_reasoning_levels: [{ effort: "low" }] }],
@@ -338,6 +345,6 @@ test("candidatesFor prefers a pinned latest resolution over a newer catalog entr
 });
 
 test("candidatesFor excludes a disabled Long latest alias", () => {
-  const config = configFromEnv({ CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest" });
+  const config = configFromEnv({ ...pinnedCodexEnv, CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest" });
   expect(candidatesFor(config, new Map()).map(c => c.tier)).toEqual(["fast", "balanced", "strong"]);
 });

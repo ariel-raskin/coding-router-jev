@@ -501,10 +501,10 @@ On **Windows**, `~` resolves to `%USERPROFILE%` (typically `C:\Users\<name>`), s
 | `TYPESAFE_API_KEY` | Key read directly by the TypeSafe SDK |
 | `TYPESAFE_BASE_URL` | Optional SDK endpoint override |
 | `TYPESAFE_DEFAULT_MODEL` | Optional JEV model override; otherwise the SDK default |
-| `CODING_ROUTER_FAST_MODEL_CODEX` | `chatgpt-6-luna`; or opt-in `luna:latest` (see below) |
-| `CODING_ROUTER_BALANCED_MODEL_CODEX` | `chatgpt-6.1-sol`; or opt-in `sol:latest` |
-| `CODING_ROUTER_STRONG_MODEL_CODEX` | `chatgpt-6.1-sol`; or opt-in `sol:latest` |
-| `CODING_ROUTER_LONG_MODEL_CODEX` | `chatgpt-6-astra`; or opt-in `astra:latest` |
+| `CODING_ROUTER_FAST_MODEL_CODEX` | `luna:latest` (see below); or an exact ID to pin |
+| `CODING_ROUTER_BALANCED_MODEL_CODEX` | `sol:latest`; or an exact ID to pin |
+| `CODING_ROUTER_STRONG_MODEL_CODEX` | `sol:latest`; or an exact ID to pin |
+| `CODING_ROUTER_LONG_MODEL_CODEX` | `astra:latest`; or an exact ID to pin (used only when Long is enabled) |
 | `CODING_ROUTER_LONG_MODEL_ENABLE` | `false` |
 | `CODING_ROUTER_START_TIER` | `fast`; initial tier for new conversations and after restart. Allowed: `fast`, `balanced`, `strong`, `long`. Invalid or blank defaults to `fast`. `long` with Long disabled falls back to `fast`. The configured model alias for the chosen tier determines the actual startup model. |
 | `CODING_ROUTER_MIN_CONFIDENCE` | `0.30`; valid range `0`–`1`, invalid values fall back |
@@ -516,9 +516,13 @@ On **Windows**, `~` resolves to `%USERPROFILE%` (typically `C:\Users\<name>`), s
 | `CODING_ROUTER_LOG_RETENTION_DAYS` | Unset (no cleanup); positive number enables startup deletion of stale session logs older than this many days |
 | `CODING_ROUTER_JEV_LOGS_SKILL_INSTALL` | `true`; set to `false` to skip automatic `jev-logs` skill installation |
 
-Configured model choices take priority over catalog detection. The catalog enriches descriptions and effort capabilities. The requested `chatgpt-6*` default names resolve to `gpt-6*` when that corresponding ID appears in the Codex catalog; otherwise the configured ID is sent unchanged. Set an exact provider model ID if your account does not advertise that alias. Account model availability is ultimately enforced by the provider.
+Configured model choices take priority over catalog detection. The catalog enriches descriptions and effort capabilities. An explicitly configured exact ID (for example `chatgpt-6.1-sol`) is sent unchanged — apart from the existing `chatgpt-6*` to catalog `gpt-6*` slug matching — and is never silently upgraded or rewritten as a latest alias. Account model availability is ultimately enforced by the provider.
 
-As an opt-in alternative for the Codex model variables only, set a value to `luna:latest`, `sol:latest`, or `astra:latest`. The alias is resolved once per launcher session — from the authenticated Codex model catalog, lazily on the first routing request if no catalog has been seen yet — to an exact catalog ID, and that exact ID is pinned for the rest of the session and used for routing, feedback, and logs. The alias itself is never sent upstream. Exact IDs (the defaults above) stay pinned and never trigger catalog discovery. If the family is missing, ambiguous, or discovery fails, the request fails with an error naming the family and the exact-ID setting to use instead, rather than silently falling back to another model. A disabled Long tier never triggers discovery.
+By default, the Codex model variables are latest-family aliases: `luna:latest`, `sol:latest`, and `astra:latest`. Balanced and Strong share the `sol:latest` default but remain distinct tiers with their own reasoning-effort policy. An alias is resolved once per launcher session — from the authenticated Codex model catalog, lazily on the first routing request if no catalog has been seen yet — to an exact catalog ID, and that exact ID is pinned for the rest of the session and used for routing, feedback notices, and JSONL logs. The alias itself is never sent upstream, and the resolved exact ID is what feedback and logs show. Restarting the launcher re-resolves the aliases, so a new startup may pick a newer exact model and incur different cost or behavior than the previous session; there is no live switching mid-session.
+
+To pin an exact model instead, set the tier's variable to the exact provider ID, for example `CODING_ROUTER_FAST_MODEL_CODEX=chatgpt-6-luna`. Exact IDs stay pinned and never trigger catalog discovery; setting every enabled tier to an exact ID bypasses discovery entirely. A disabled Long tier never triggers discovery, and its `astra:latest` default is only resolved if Long is enabled.
+
+Discovery uses the authenticated Codex model catalog (the routing request's own credentials, against `https://chatgpt.com/backend-api/codex/models` by default, or the configured ChatGPT base URL), including catalog pagination. Custom providers that expose a usable model list in a supported shape are handled the same way; a custom provider with no usable model-list endpoint cannot resolve aliases, so pin exact IDs for every enabled tier in that setup. If discovery times out, is unauthorized or otherwise fails, or the family is missing, ambiguous, or the catalog is malformed or paginates incompletely, the request fails with an actionable error naming the family alias and the exact-ID setting to use instead (for example `CODING_ROUTER_FAST_MODEL_CODEX=<exact catalog model ID>`) — it never silently falls back to a hardcoded model. Claude and Pi model defaults are unchanged by this latest-by-default behavior.
 
 ### Pi agent configuration
 

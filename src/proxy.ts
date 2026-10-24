@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CodexLatestResolutionError, extractCatalogEntries, modelIdOf, parseLatestAlias, resolveLatestFamily, VIRTUAL_MODEL_ID, type CatalogEntryLike, type CodexLatestFamily, type CodexLatestResolutionErrorKind } from "./codex-resolver";
 import { CODEX_MODEL_ENV_KEYS, type Config } from "./config";
 import { conversationKey, hash, isJevNotice, newTurn, recentContext } from "./context";
 import { applyEffort, type EffortState } from "./effort";
@@ -7,7 +8,6 @@ import { cleanupStaleLogs, DEFAULT_LOG_DIR, sessionHistory } from "./history";
 import { decide, decisionLabel } from "./policy";
 import { buildRequest, createRouter, type Route, type RoutingResult, type SensitivityAnswers } from "./router";
 import { observeStream, type Usage } from "./stream";
-import { CodexLatestResolutionError, extractCatalogEntries, modelIdOf, parseLatestAlias, resolveLatestFamily, VIRTUAL_MODEL_ID, type CatalogEntryLike, type CodexLatestFamily, type CodexLatestResolutionErrorKind } from "./codex-resolver";
 import { TIERS, type Candidate, type CodexBody, type Tier } from "./types";
 
 export const AUTO_MODEL = VIRTUAL_MODEL_ID;
@@ -123,13 +123,19 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
       catalog.set(id, entry as CatalogModel);
       stored++;
     }
+    // Pinning is blocked not only by this response being an incomplete page,
+    // but also while the assembled catalog is known to be incomplete or a
+    // paginated discovery is still in flight — otherwise a proxied /models
+    // response (even an empty one after a failed discovery) could pin a
+    // session resolution from partial data.
+    const pinBlocked = incomplete || catalogIncomplete || discoveryPromise !== undefined;
     // An empty response is not a catalog opportunity: it must not suppress
     // lazy discovery on the first routing request.
     if (stored > 0) catalogIncomplete = incomplete;
     // Paginated discovery ingests page by page, and a proxied page that
     // advertises further pages is incomplete; pinning must wait until the
     // full catalog is assembled so an early page cannot lock in an older ID.
-    if (pin && !incomplete) pinFromCatalog();
+    if (pin && !pinBlocked) pinFromCatalog();
   }
   function hasPaginationContinuation(payload: unknown): boolean {
     if (!payload || typeof payload !== "object") return false;

@@ -1418,3 +1418,80 @@ test("metadata-only catalog entries without versions fail actionably through the
     expect(responsesHits).toBe(0);
   } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("an empty proxied /models after a failed discovery does not pin partial catalog data", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-empty-after-fail-"));
+  let failPage2 = true;
+  const captured: CodexBody[] = [];
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname.endsWith("/models")) {
+      if (req.headers.get("x-test-empty")) return Response.json({ models: [] });
+      if (url.searchParams.get("cursor") === "page2") {
+        if (failPage2) return Response.json({ error: "boom" }, { status: 500 });
+        return Response.json({ models: [aliasModel("gpt-6.10-luna")] });
+      }
+      return Response.json({ models: [aliasModel("gpt-6.9-luna")], next_cursor: "page2" });
+    }
+    const body = await req.json() as CodexBody;
+    captured.push(body);
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const send = () => fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
+  try {
+    expect((await send()).status).toBe(502);
+    await fetch(`http://127.0.0.1:${proxy.port}/models`, { headers: { "x-test-empty": "1" } }).then(r => r.text());
+    failPage2 = false;
+    const second = await send();
+    expect(second.status).toBe(200);
+    await second.text();
+    expect(captured.map(body => body.model)).toEqual(["gpt-6.10-luna"]);
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a proxied /models during in-flight discovery does not pin before pagination completes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-models-race-"));
+  const captured: CodexBody[] = [];
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname.endsWith("/models")) {
+      if (req.headers.get("x-test-complete")) return Response.json({ models: [aliasModel("gpt-6.9-luna")] });
+      if (url.searchParams.get("cursor") === "page2") { await Bun.sleep(150); return Response.json({ models: [aliasModel("gpt-6.10-luna")] }); }
+      return Response.json({ models: [aliasModel("gpt-6.9-luna")], next_cursor: "page2" });
+    }
+    const body = await req.json() as CodexBody;
+    captured.push(body);
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  try {
+    const pending = fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
+    await Bun.sleep(30);
+    await fetch(`http://127.0.0.1:${proxy.port}/models`, { headers: { "x-test-complete": "1" } }).then(r => r.text());
+    const response = await pending;
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured.map(body => body.model)).toEqual(["gpt-6.10-luna"]);
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("catalog pagination cycles fail closed with a distinct message", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-cycle-"));
+  let responsesHits = 0;
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.9-luna")], next_cursor: "loop" });
+    responsesHits++;
+    return Response.json({ model: "should-not-run" });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("pagination cycle detected");
+    expect(responsesHits).toBe(0);
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});

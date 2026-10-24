@@ -7,10 +7,14 @@ import { cleanupStaleLogs, DEFAULT_LOG_DIR, sessionHistory } from "./history";
 import { decide, decisionLabel } from "./policy";
 import { buildRequest, createRouter, type Route, type RoutingResult, type SensitivityAnswers } from "./router";
 import { observeStream, type Usage } from "./stream";
+import { CodexLatestResolutionError, extractCatalogEntries, modelIdOf, parseLatestAlias, resolveLatestFamily, type CatalogEntryLike, type CodexLatestFamily } from "./codex-resolver";
 import { TIERS, type Candidate, type CodexBody, type Tier } from "./types";
 
+export { CodexLatestResolutionError, isLatestAlias, parseLatestAlias, resolveLatestFamily } from "./codex-resolver";
+export type { CodexLatestFamily } from "./codex-resolver";
+
 export const AUTO_MODEL = "coding-router-jev";
-type CatalogModel = { slug: string; display_name?: string; description?: string; context_window?: number; default_reasoning_level?: string; supported_reasoning_levels?: { effort: string }[]; [key: string]: unknown };
+type CatalogModel = { slug?: string; id?: string; display_name?: string; description?: string; context_window?: number; default_reasoning_level?: string; supported_reasoning_levels?: { effort: string }[]; [key: string]: unknown };
 type ResponseObservation = { model: string; read: number | null; created: number | null; at: number };
 type CacheRunSummary = { window: string; observed_responses: number; newest_seconds_ago?: number; oldest_seconds_ago?: number; cache_read_tokens_avg: number | null; cache_created_tokens_avg: number | null };
 export function summarizeCacheRun(observations: ResponseObservation[], currentModel: string, now: number): CacheRunSummary {
@@ -36,12 +40,25 @@ export function summarizeCacheRun(observations: ResponseObservation[], currentMo
   return result;
 }
 type State = { tier: Tier; model: string; effort: EffortState; lastTurn?: string; notice?: string; noticeKey?: string; observations: ResponseObservation[]; last?: Usage & { at: number } };
-export function candidatesFor(config: Config, catalog: Map<string, CatalogModel>): Candidate[] {
+export function candidatesFor(config: Config, catalog: Map<string, CatalogModel>, resolvedAliases?: ReadonlyMap<CodexLatestFamily, string>): Candidate[] {
   return TIERS.filter(tier => tier !== "long" || config.longModelEnabled).map(tier => {
     const configured = config.codexModels[tier];
-    const canonical = configured.replace(/^chatgpt-6/, "gpt-6");
-    const id = catalog.has(configured) ? configured : catalog.has(canonical) ? canonical : configured;
-    const model = catalog.get(id);
+    const aliasFamily = parseLatestAlias(configured);
+    let id = configured;
+    if (aliasFamily) {
+      // Pinned session resolutions win; otherwise resolve synchronously from
+      // the catalog at hand. An unresolved alias stays as-is here — prepare()
+      // is responsible for discovery and for failing before it can leak.
+      let resolved = resolvedAliases?.get(aliasFamily);
+      if (!resolved) {
+        try { resolved = resolveLatestFamily(aliasFamily, [...catalog.values()]); } catch { resolved = undefined; }
+      }
+      id = resolved ?? configured;
+    } else {
+      const canonical = configured.replace(/^chatgpt-6/, "gpt-6");
+      id = catalog.has(configured) ? configured : catalog.has(canonical) ? canonical : configured;
+    }
+    const model = catalog.get(id) ?? [...catalog.values()].find(entry => modelIdOf(entry) === id);
     const efforts = model?.supported_reasoning_levels?.map(level => level.effort) ?? (/^(?:gpt|chatgpt)-6/.test(id) ? ["low", "medium", "high"] : []);
     const capacity = model?.context_window ? { contextWindow: model.context_window } : undefined;
     return { tier, id, description: [model?.display_name ?? id, model?.description, model?.context_window && `${model.context_window} context tokens`].filter(Boolean).join("; "), efforts, defaultEffort: model?.default_reasoning_level ?? (efforts.includes("medium") ? "medium" : efforts[0]), capacity };
@@ -77,11 +94,147 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
   const locks = new Map<string, Promise<unknown>>();
   const announced = new Set<string>();
   const responseKeys = new Map<string, string>();
-  async function prepare(body: CodexBody, headers: Headers, compact: boolean) {
+  // Session-pinned `family:latest` resolutions: once a family resolves to an
+  // exact ID it never changes for this proxy's lifetime, even if a later
+  // catalog refresh advertises a newer version.
+  const resolvedAliases = new Map<CodexLatestFamily, string>();
+  let catalogSeen = false;
+  let discoveryPromise: Promise<void> | undefined;
+  const TIER_ENV_KEYS: Record<Tier, string> = {
+    fast: "CODING_ROUTER_FAST_MODEL_CODEX",
+    balanced: "CODING_ROUTER_BALANCED_MODEL_CODEX",
+    strong: "CODING_ROUTER_STRONG_MODEL_CODEX",
+    long: "CODING_ROUTER_LONG_MODEL_CODEX",
+  };
+  function aliasNeeds(): { tier: Tier; family: CodexLatestFamily }[] {
+    return TIERS
+      .filter(tier => tier !== "long" || config.longModelEnabled)
+      .flatMap(tier => {
+        const family = parseLatestAlias(config.codexModels[tier]);
+        return family ? [{ tier, family }] : [];
+      });
+  }
+  function pinFromCatalog(): void {
+    for (const { family } of aliasNeeds()) {
+      if (resolvedAliases.has(family)) continue;
+      try { resolvedAliases.set(family, resolveLatestFamily(family, [...catalog.values()])); } catch { /* not resolvable yet */ }
+    }
+  }
+  function ingestCatalog(entries: readonly CatalogEntryLike[], pin = true): void {
+    catalogSeen = true;
+    // Capture the raw upstream catalog before AUTO_MODEL is injected anywhere.
+    for (const entry of entries) {
+      const id = modelIdOf(entry);
+      if (!id || id === AUTO_MODEL) continue;
+      catalog.set(id, entry as CatalogModel);
+    }
+    // Paginated discovery ingests page by page; pinning must wait until the
+    // full catalog is assembled so an early page cannot lock in an older ID.
+    if (pin) pinFromCatalog();
+  }
+  function actionableResolutionError(families: CodexLatestFamily[], detail: string): CodexLatestResolutionError {
+    const family = families[0] ?? "luna";
+    const envKeys = [...new Set(aliasNeeds().filter(need => families.includes(need.family)).map(need => TIER_ENV_KEYS[need.tier]))];
+    const configure = envKeys.length > 0 ? envKeys.join(" or ") : "CODING_ROUTER_FAST_MODEL_CODEX";
+    return new CodexLatestResolutionError(family, "discovery",
+      `Unable to resolve '${family}:latest' for the Codex provider: ${detail}. Configure an exact Codex model ID instead of '${family}:latest' (for example ${configure}=<exact catalog model ID>), or check that the Codex upstream is authenticated and advertises a ${family} model.`);
+  }
+  function catalogBaseURL(): string {
+    return (options.chatgptBaseURL ?? options.apiBaseURL ?? "https://chatgpt.com/backend-api/codex").replace(/\/$/, "");
+  }
+  function nextCatalogURL(payload: unknown, response: Response, currentURL: string, entries: CatalogEntryLike[]): string | undefined {
+    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+    const pagination = record.pagination && typeof record.pagination === "object" ? record.pagination as Record<string, unknown> : {};
+    const link = response.headers.get("link")?.match(/<([^>]+)>\s*;\s*rel="?next"?/i)?.[1];
+    const explicit = link ?? [record.next, record.next_url, pagination.next, pagination.next_url].find((value): value is string => typeof value === "string" && value.length > 0);
+    if (explicit) {
+      try {
+        const next = new URL(explicit, currentURL);
+        // Never send upstream credentials to a different host.
+        return next.origin === new URL(currentURL).origin ? next.toString() : undefined;
+      } catch { return undefined; }
+    }
+    const cursor = [record.next_cursor, record.cursor, pagination.next_cursor, pagination.cursor]
+      .find((value): value is string | number => (typeof value === "string" && value.length > 0) || typeof value === "number");
+    if (cursor !== undefined) {
+      const next = new URL(`${catalogBaseURL()}/models`);
+      next.searchParams.set("cursor", String(cursor));
+      return next.toString();
+    }
+    if (record.has_more === true) {
+      const lastId = entries.length > 0 ? modelIdOf(entries[entries.length - 1]) : undefined;
+      if (!lastId) return undefined;
+      const next = new URL(`${catalogBaseURL()}/models`);
+      next.searchParams.set("after", lastId);
+      return next.toString();
+    }
+    return undefined;
+  }
+  async function fetchCatalog(headers: Headers, signal: AbortSignal | undefined, families: CodexLatestFamily[]): Promise<void> {
+    const visited = new Set<string>();
+    let url: string | undefined = `${catalogBaseURL()}/models`;
+    let totalEntries = 0;
+    for (let page = 0; url && page < 10; page++) {
+      if (visited.has(url)) break;
+      visited.add(url);
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 10_000);
+      const onAbort = () => controller.abort();
+      if (signal?.aborted) controller.abort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+      let response: Response;
+      let payload: unknown;
+      try {
+        response = await fetch(url, { method: "GET", headers, signal: controller.signal, redirect: "manual" });
+        if (!response.ok) throw actionableResolutionError(families, `catalog request failed (HTTP ${response.status})`);
+        try { payload = await response.json(); } catch { throw actionableResolutionError(families, "catalog response was malformed"); }
+      } catch (error) {
+        if (error instanceof CodexLatestResolutionError) throw error;
+        if (timedOut) throw actionableResolutionError(families, "catalog request timed out");
+        if (signal?.aborted) throw actionableResolutionError(families, "catalog request was cancelled");
+        throw actionableResolutionError(families, "catalog request failed");
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      const entries = extractCatalogEntries(payload);
+      totalEntries += entries.length;
+      ingestCatalog(entries, false);
+      url = nextCatalogURL(payload, response, url, entries);
+    }
+    pinFromCatalog();
+    if (totalEntries === 0) throw actionableResolutionError(families, "catalog response was empty");
+  }
+  async function ensureAliasesResolved(families: CodexLatestFamily[], headers: Headers, signal: AbortSignal | undefined): Promise<void> {
+    const wanted = [...new Set(families)];
+    if (wanted.length === 0 || wanted.every(family => resolvedAliases.has(family))) return;
+    pinFromCatalog();
+    if (wanted.every(family => resolvedAliases.has(family))) return;
+    if (!catalogSeen) {
+      if (!discoveryPromise) {
+        discoveryPromise = fetchCatalog(headers, signal, wanted).finally(() => { discoveryPromise = undefined; });
+      }
+      await discoveryPromise;
+    }
+    for (const family of wanted) {
+      if (resolvedAliases.has(family)) continue;
+      try { resolvedAliases.set(family, resolveLatestFamily(family, [...catalog.values()])); }
+      catch (error) { throw actionableResolutionError([family], error instanceof Error ? error.message : "catalog discovery failed"); }
+    }
+  }
+  async function prepare(body: CodexBody, headers: Headers, compact: boolean, signal?: AbortSignal) {
     const key = (body.previous_response_id ? responseKeys.get(body.previous_response_id) : undefined) ?? conversationKey(body, headers);
     const previous = locks.get(key) ?? Promise.resolve();
     const job = previous.catch(() => {}).then(async () => {
-      const candidates = candidatesFor(config, catalog);
+      const explicitAliasFamily = body.model !== AUTO_MODEL ? parseLatestAlias(body.model) : null;
+      if (body.model === AUTO_MODEL) {
+        const families = aliasNeeds().map(need => need.family);
+        if (families.length > 0) await ensureAliasesResolved(families, headers, signal);
+      } else if (explicitAliasFamily) {
+        await ensureAliasesResolved([explicitAliasFamily], headers, signal);
+      }
+      const candidates = candidatesFor(config, catalog, resolvedAliases);
       let state = states.get(key);
       if (!state) {
         const startCandidate = candidates.find(candidate => candidate.tier === config.startTier) ?? candidates.find(candidate => candidate.tier === "fast")!;
@@ -91,8 +244,10 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
         if (states.size > 100) states.delete(states.keys().next().value!);
       }
       if (body.model !== AUTO_MODEL) {
-        const match = candidates.find(candidate => candidate.id === body.model);
-        state.model = body.model;
+        const requestedModel = explicitAliasFamily ? resolvedAliases.get(explicitAliasFamily)! : body.model;
+        const match = candidates.find(candidate => candidate.id === requestedModel);
+        body.model = requestedModel;
+        state.model = requestedModel;
         state.tier = match?.tier ?? state.tier;
         state.effort = { base: body.reasoning?.effort, effort: body.reasoning?.effort, updates: [] };
         if (Array.isArray(body.input)) body.input = body.input.filter(item => !isJevNotice(item));
@@ -166,7 +321,7 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
         if (request.method === "POST" && /\/responses(?:\/compact)?$/.test(path)) {
           try { body = JSON.parse(new TextDecoder().decode(payload)); } catch { return Response.json({ error: { message: "Invalid JSON request" } }, { status: 400 }); }
           if (body && typeof body.model === "string") {
-            prepared = await prepare(body, headers, path.endsWith("/compact"));
+            prepared = await prepare(body, headers, path.endsWith("/compact"), request.signal);
             payload = new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer;
           }
         }
@@ -176,10 +331,14 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
         if (/\/models$/.test(path) && response.ok) {
           const data = await response.json() as { models?: CatalogModel[] };
           if (Array.isArray(data.models)) {
-            for (const model of data.models) catalog.set(model.slug, model);
+            // Capture the raw upstream catalog before injecting AUTO_MODEL.
+            ingestCatalog(data.models);
             const autoModel = data.models.find(model => model.slug === AUTO_MODEL);
             if (autoModel) autoModel.display_name = codexStatusModelName(config.statusFormat);
             else if (data.models[0]) data.models.unshift({ ...data.models[0], slug: AUTO_MODEL, display_name: codexStatusModelName(config.statusFormat), description: "JEV selects the model tier and reasoning effort for each turn.", visibility: "list", supported_in_api: true, priority: 0, upgrade: null });
+          } else {
+            const entries = extractCatalogEntries(data);
+            if (entries.length > 0) ingestCatalog(entries);
           }
           return Response.json(data, { status: response.status, headers: responseHeaders });
         }

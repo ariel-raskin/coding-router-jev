@@ -518,6 +518,8 @@ On **Windows**, `~` resolves to `%USERPROFILE%` (typically `C:\Users\<name>`), s
 
 Configured model choices take priority over catalog detection. The catalog enriches descriptions and effort capabilities. The requested `chatgpt-6*` default names resolve to `gpt-6*` when that corresponding ID appears in the Codex catalog; otherwise the configured ID is sent unchanged. Set an exact provider model ID if your account does not advertise that alias. Account model availability is ultimately enforced by the provider.
 
+As an opt-in alternative for the Codex model variables only, set a value to `luna:latest`, `sol:latest`, or `astra:latest`. The alias is resolved once per launcher session — from the authenticated Codex model catalog, lazily on the first routing request if no catalog has been seen yet — to an exact catalog ID, and that exact ID is pinned for the rest of the session and used for routing, feedback, and logs. The alias itself is never sent upstream. Exact IDs (the defaults above) stay pinned and never trigger catalog discovery. If the family is missing, ambiguous, or discovery fails, the request fails with an error naming the family and the exact-ID setting to use instead, rather than silently falling back to another model. A disabled Long tier never triggers discovery.
+
 ### Pi agent configuration
 
 The shared routing configuration includes model mappings for Pi extensions. Pi uses provider-qualified model IDs (e.g. `openai-codex/gpt-6-luna`) where the first slash separates the provider prefix from the model name; model IDs may themselves contain additional slashes.

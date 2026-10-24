@@ -8,10 +8,10 @@ describe("configuration", () => {
   test("uses documented defaults", () => {
     expect(configFromEnv({})).toEqual({
       codexModels: {
-        fast: "chatgpt-6-luna",
-        balanced: "chatgpt-6.1-sol",
-        strong: "chatgpt-6.1-sol",
-        long: "chatgpt-6-astra",
+        fast: "luna:latest",
+        balanced: "sol:latest",
+        strong: "sol:latest",
+        long: "astra:latest",
       },
       piModels: {
         fast: "openai-codex/gpt-6-luna",
@@ -36,6 +36,53 @@ describe("configuration", () => {
       logRetentionDays: undefined,
       claudeContextWindow: undefined,
     });
+  });
+
+  test("blank or whitespace Codex model values fall back to latest-family aliases", () => {
+    const config = configFromEnv({
+      CODING_ROUTER_FAST_MODEL_CODEX: "",
+      CODING_ROUTER_BALANCED_MODEL_CODEX: "  ",
+      CODING_ROUTER_STRONG_MODEL_CODEX: "",
+      CODING_ROUTER_LONG_MODEL_CODEX: "  ",
+    });
+    expect(config.codexModels).toEqual({
+      fast: "luna:latest",
+      balanced: "sol:latest",
+      strong: "sol:latest",
+      long: "astra:latest",
+    });
+  });
+
+  test("one explicit Codex override stays pinned among default latest aliases", () => {
+    const config = configFromEnv({ CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol" });
+    expect(config.codexModels).toEqual({
+      fast: "luna:latest",
+      balanced: "chatgpt-6.1-sol",
+      strong: "sol:latest",
+      long: "astra:latest",
+    });
+  });
+
+  test("all-pinned Codex configuration keeps exact IDs without rewriting them as aliases", () => {
+    const config = configFromEnv({
+      CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna",
+      CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol",
+      CODING_ROUTER_STRONG_MODEL_CODEX: "custom-sol-exact",
+      CODING_ROUTER_LONG_MODEL_CODEX: "chatgpt-6-astra",
+    });
+    expect(config.codexModels).toEqual({
+      fast: "chatgpt-6-luna",
+      balanced: "chatgpt-6.1-sol",
+      strong: "custom-sol-exact",
+      long: "chatgpt-6-astra",
+    });
+  });
+
+  test("balanced and strong share the sol:latest default while remaining distinct tiers", () => {
+    const config = configFromEnv({});
+    expect(config.codexModels.balanced).toBe("sol:latest");
+    expect(config.codexModels.strong).toBe("sol:latest");
+    expect(config.codexModels.balanced).toBe(config.codexModels.strong);
   });
 
   test("parses env lines and strips quotes/comments", () => {

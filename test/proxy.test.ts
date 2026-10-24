@@ -8,6 +8,21 @@ import { buildRequest, type Route, type RoutingInput } from "../src/router";
 import { REDACTED, REDACTED_ERROR } from "../src/history";
 import type { CodexBody, Item } from "../src/types";
 
+/** Legacy fixture IDs: tests that predate latest-by-default pin every Codex tier so no discovery is triggered. */
+function pinnedCodexConfig(extra: Record<string, string> = {}) {
+  return configFromEnv({
+    CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna",
+    CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol",
+    CODING_ROUTER_STRONG_MODEL_CODEX: "chatgpt-6.1-sol",
+    CODING_ROUTER_LONG_MODEL_CODEX: "chatgpt-6-astra",
+    ...extra,
+  });
+}
+
+/** Only Fast uses `luna:latest`; the other tiers are pinned so discovery stays single-family. */
+function latestFastConfig() {
+  return pinnedCodexConfig({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" });
+}
 function result(input: RoutingInput, tier: string, effort: string) {
   return { request: buildRequest(input), ms: 1, response: {
     model: "fake-jev", usage: { input_tokens: 1, output_tokens: 1 },
@@ -75,7 +90,7 @@ test("disabled recent context is omitted and a failed JEV call keeps the current
   let seen: RoutingInput | undefined;
   let forwarded: CodexBody | undefined;
   const upstream = Bun.serve({ port: 0, async fetch(req) { forwarded = await req.json() as CodexBody; return Response.json({ model: forwarded.model, usage: { input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }); } });
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_SEND_RECENT_CONTEXT: "false" }), {
+  const proxy = startProxy(pinnedCodexConfig({ CODING_ROUTER_SEND_RECENT_CONTEXT: "false" }), {
     apiBaseURL: `http://127.0.0.1:${upstream.port}`, logDirectory: directory, onNotice: notice => notices.push(notice),
     route: async input => { seen = input; return { request: buildRequest(input), response: null, error: "timeout", ms: 3000 }; },
   });
@@ -104,7 +119,7 @@ test("custom feedback format with all placeholders verified through proxy", asyn
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const format = "[Jev] {tier} · {model} · {effort} · {decision} · {confidence} · prev:{previous_model} · cr:{cache_read} · cw:{cache_write} · jin:{jev_tokens_input} · jout:{jev_tokens_output} · jtotal:{jev_tokens}";
-  const config = configFromEnv({ CODING_ROUTER_FEEDBACK_FORMAT: format });
+  const config = pinnedCodexConfig({ CODING_ROUTER_FEEDBACK_FORMAT: format });
   const route: Route = async input => { turnCount++; return turnCount === 1 ? result(input, "strong", "high") : result(input, "balanced", "low"); };
   const proxy = startProxy(config, { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory, onNotice: notice => notices.push(notice) });
   const send = (input: Item[]) => fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input }) }).then(r => r.text());
@@ -134,7 +149,7 @@ test("malformed JEV usage fields render as unavailable in feedback", async () =>
     return new Response(`event: response.created\ndata: {"type":"response.created"}\n\nevent: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { model: body.model, usage: { input_tokens_details: { cached_tokens: 10 } } } })}\n\n`, { headers: { "content-type": "text/event-stream" } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const config = configFromEnv({ CODING_ROUTER_FEEDBACK_FORMAT: "jin:{jev_tokens_input} jout:{jev_tokens_output} jtotal:{jev_tokens}" });
+  const config = pinnedCodexConfig({ CODING_ROUTER_FEEDBACK_FORMAT: "jin:{jev_tokens_input} jout:{jev_tokens_output} jtotal:{jev_tokens}" });
   // Route returns malformed usage: NaN and Infinity should be rejected by isFinite checks (M4)
   const route: Route = async input => ({
     request: buildRequest(input), ms: 1, response: {
@@ -160,7 +175,7 @@ test.each([true, false])("a provider retry reuses the JEV decision and displays 
     if (upstreamCalls === 1) return Response.json({ error: "retry" }, { status: 503 });
     return new Response(new TextEncoder().encode('event: response.created\ndata: {"type":"response.created"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"model":"chatgpt-6-luna"}}\n\n'), { headers: hasSSEHeader ? { "content-type": "text/event-stream" } : {} });
   } });
-  const proxy = startProxy(configFromEnv({}), { apiBaseURL: `http://127.0.0.1:${upstream.port}`, logDirectory: directory,
+  const proxy = startProxy(pinnedCodexConfig(), { apiBaseURL: `http://127.0.0.1:${upstream.port}`, logDirectory: directory,
     route: async input => { jevCalls++; return result(input, "fast", "low"); },
   });
   try {
@@ -289,7 +304,7 @@ test("jev notices are stripped even with custom feedback format", async () => {
   const base = `http://127.0.0.1:${upstream.port}`;
   const format = "Router: {model} ({tier}) effort={effort}";
   const route: Route = async input => result(input, "strong", "high");
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FEEDBACK_FORMAT: format }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig({ CODING_ROUTER_FEEDBACK_FORMAT: format }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const local = `http://127.0.0.1:${proxy.port}`;
   const send = (input: Item[]) => fetch(`${local}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input }) }).then(r => r.text());
   try {
@@ -323,7 +338,7 @@ test("tool continuations after jev notice filtering still work correctly", async
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "fast", "low"); };
-  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const local = `http://127.0.0.1:${proxy.port}`;
   const send = (input: Item[]) => fetch(`${local}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input }) }).then(r => r.text());
   try {
@@ -358,7 +373,7 @@ test("multiple jev notices in same history are all stripped", async () => {
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => result(input, "fast", "low");
-  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const local = `http://127.0.0.1:${proxy.port}`;
   const send = (input: Item[]) => fetch(`${local}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input }) }).then(r => r.text());
   try {
@@ -396,7 +411,7 @@ test("compact requests also strip jev notices from history", async () => {
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => result(input, "fast", "low");
-  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const local = `http://127.0.0.1:${proxy.port}`;
   try {
     await fetch(`${local}/models`).then(r => r.json());
@@ -433,7 +448,7 @@ test("previous_response_id continuation still works after notice filtering", asy
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "fast", "low"); };
-  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const local = `http://127.0.0.1:${proxy.port}`;
   const send = (body: Record<string, unknown>) => fetch(`${local}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(r => r.text());
   try {
@@ -743,7 +758,7 @@ test("startup model uses catalog alias resolution with custom fast model", async
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "fast", "low"); };
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna-v2" });
+  const config = pinnedCodexConfig({ CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna-v2" });
   const proxy = startProxy(config, { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
@@ -769,7 +784,7 @@ test("startup model resolves chatgpt-6 alias to catalog gpt-6 slug", async () =>
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "balanced", "medium"); };
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_START_TIER: "balanced" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig({ CODING_ROUTER_START_TIER: "balanced" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
@@ -828,7 +843,7 @@ test("sensitivity questions are in JEV request and sensitive content is redacted
       },
     };
   };
-  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const local = `http://127.0.0.1:${proxy.port}`;
   try {
     await fetch(`${local}/models`).then(r => r.json());
@@ -868,7 +883,7 @@ test("JEV error in JSONL is replaced with safe category", async () => {
   const route: Route = async input => ({
     request: buildRequest(input), response: null, error: "Error processing: my password is hunter2", ms: 100,
   });
-  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "test" }] }) }).then(r => r.text());
@@ -896,7 +911,7 @@ test("latest aliases resolve from a prior /models catalog, stay pinned across re
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_BALANCED_MODEL_CODEX: "sol:latest", CODING_ROUTER_STRONG_MODEL_CODEX: "sol:latest" });
+  const config = configFromEnv({});
   const route: Route = async input => { inputs.push(input); return result(input, "balanced", "low"); };
   const proxy = startProxy(config, { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory, onNotice: notice => notices.push(notice) });
   const local = `http://127.0.0.1:${proxy.port}`;
@@ -923,6 +938,99 @@ test("latest aliases resolve from a prior /models catalog, stay pinned across re
   } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("unset Codex defaults resolve latest families once, stay pinned, and appear in feedback/JSONL", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-defaults-"));
+  let modelsHits = 0;
+  let catalogModels = [aliasModel("gpt-6.9-luna"), aliasModel("gpt-6.10-sol")];
+  const captured: CodexBody[] = [];
+  const inputs: RoutingInput[] = [];
+  const notices: string[] = [];
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) { modelsHits++; return Response.json({ models: catalogModels }); }
+    const body = await req.json() as CodexBody;
+    captured.push(body);
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const route: Route = async input => { inputs.push(input); return result(input, "balanced", "low"); };
+  const proxy = startProxy(configFromEnv({}), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory, onNotice: notice => notices.push(notice) });
+  const local = `http://127.0.0.1:${proxy.port}`;
+  const send = (content: string, prior: Item[] = []) => fetch(`${local}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [...prior, { role: "user", content }] }) }).then(r => r.text());
+  try {
+    await send("hello");
+    expect(modelsHits).toBe(1);
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].candidates.map(c => c.id)).toEqual(["gpt-6.9-luna", "gpt-6.10-sol", "gpt-6.10-sol"]);
+    expect(captured[0].model).toBe("gpt-6.10-sol");
+    expect(notices[0]).toContain("model: gpt-6.10-sol");
+    // A newer catalog must not switch the session: no second discovery, same exact IDs.
+    catalogModels = [aliasModel("gpt-6.10-luna"), aliasModel("gpt-6.11-sol")];
+    const first: Item = { role: "user", content: "hello" };
+    await send("again", [first, { role: "assistant", content: "answer" }]);
+    expect(modelsHits).toBe(1);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1].candidates.map(c => c.id)).toEqual(["gpt-6.9-luna", "gpt-6.10-sol", "gpt-6.10-sol"]);
+    expect(captured.at(-1)!.model).toBe("gpt-6.10-sol");
+    expect(JSON.stringify(captured)).not.toContain(":latest");
+    const records = (await readFile(proxy.logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records.map(record => record.decision.model)).toEqual(["gpt-6.10-sol", "gpt-6.10-sol"]);
+    expect(JSON.stringify(records)).not.toContain(":latest");
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("one exact Codex ID stays pinned among default latest aliases through the proxy", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-mixed-pin-"));
+  let modelsHits = 0;
+  const captured: CodexBody[] = [];
+  const inputs: RoutingInput[] = [];
+  const notices: string[] = [];
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) { modelsHits++; return Response.json({ models: [aliasModel("gpt-6.9-luna"), aliasModel("gpt-6.1-sol"), aliasModel("gpt-6.10-sol")] }); }
+    const body = await req.json() as CodexBody;
+    captured.push(body);
+    return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const route: Route = async input => { inputs.push(input); return result(input, "balanced", "low"); };
+  const proxy = startProxy(configFromEnv({ CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory, onNotice: notice => notices.push(notice) });
+  try {
+    await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
+    expect(modelsHits).toBe(1);
+    // Balanced keeps its pinned exact ID (canonical catalog slug); it is not upgraded to the newer sol.
+    expect(inputs[0].candidates.map(c => c.id)).toEqual(["gpt-6.9-luna", "gpt-6.1-sol", "gpt-6.10-sol"]);
+    expect(captured[0].model).toBe("gpt-6.1-sol");
+    expect(notices[0]).toContain("model: gpt-6.1-sol");
+    expect(JSON.stringify(captured)).not.toContain(":latest");
+    const records = (await readFile(proxy.logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records.map(record => record.decision.model)).toEqual(["gpt-6.1-sol"]);
+    expect(JSON.stringify(records)).not.toContain(":latest");
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("discovery failure under default latest config is actionable and forwards nothing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-default-fail-"));
+  let routeCalls = 0;
+  let responsesHits = 0;
+  const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.10-sol")] });
+    responsesHits++;
+    return Response.json({ model: "should-not-run" });
+  } });
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const proxy = startProxy(configFromEnv({}), { route: async input => { routeCalls++; return result(input, "fast", "low"); }, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
+    const text = await response.text();
+    expect(response.status).toBe(502);
+    expect(text).toContain("luna:latest");
+    expect(text).toContain("CODING_ROUTER_FAST_MODEL_CODEX");
+    expect(routeCalls).toBe(0);
+    expect(responsesHits).toBe(0);
+    const logText = await readFile(proxy.logPath, "utf8").catch(() => "");
+    expect(logText).not.toContain(":latest");
+  } finally { proxy.close(); upstream.stop(true); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("first routing request without a prior /models lazily discovers with the request auth", async () => {
   const directory = await mkdtemp(join(tmpdir(), "codex-jev-latest-lazy-"));
   let modelsHits = 0;
@@ -937,7 +1045,7 @@ test("first routing request without a prior /models lazily discovers with the re
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
   const route: Route = async input => { inputs.push(input); return result(input, "fast", "low"); };
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { authorization: "Bearer fake-auth", "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(modelsHits).toBe(1);
@@ -961,7 +1069,7 @@ test("lazy discovery follows catalog pagination before resolving", async () => {
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(captured[0].model).toBe("gpt-6.10-luna");
@@ -977,7 +1085,7 @@ test("missing family returns an actionable error and never forwards the alias up
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     const text = await response.text();
@@ -998,7 +1106,7 @@ test("ambiguous catalog returns an actionable error and never forwards the alias
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.json());
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
@@ -1017,7 +1125,7 @@ test("discovery auth failure is actionable and does not leak credentials or the 
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { authorization: "Bearer super-secret-token", "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     const text = await response.text();
@@ -1039,7 +1147,7 @@ test("empty catalog discovery is actionable and never forwards the alias upstrea
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1058,7 +1166,7 @@ test("disabled Long alias does not trigger discovery or errors", async () => {
     return Response.json({ model: forwarded.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig({ CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(modelsHits).toBe(0);
@@ -1076,7 +1184,7 @@ test("exact IDs work without any discovery request", async () => {
     return Response.json({ model: forwarded.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({}), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(pinnedCodexConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(modelsHits).toBe(0);
@@ -1111,7 +1219,7 @@ test("discovery failure skips the classifier and writes no alias to JSONL", asyn
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => { routeCalls++; return result(input, "fast", "low"); }, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => { routeCalls++; return result(input, "fast", "low"); }, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1146,7 +1254,7 @@ test("network-level catalog failure is actionable and forwards nothing", async (
   const deadBase = `http://127.0.0.1:${dead.port}`;
   dead.stop(true);
   let routeCalls = 0;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => { routeCalls++; return result(input, "fast", "low"); }, apiBaseURL: deadBase, chatgptBaseURL: deadBase, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => { routeCalls++; return result(input, "fast", "low"); }, apiBaseURL: deadBase, chatgptBaseURL: deadBase, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     const text = await response.text();
@@ -1166,7 +1274,7 @@ test("malformed catalog JSON is actionable and forwards nothing", async () => {
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1183,7 +1291,7 @@ test("an empty proxied /models response does not suppress lazy discovery", async
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.text());
     expect(modelsHits).toBe(1);
@@ -1210,7 +1318,7 @@ test("a paginated proxied /models page does not pin an older version", async () 
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/models`).then(r => r.text());
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
@@ -1230,7 +1338,7 @@ test("catalog pagination beyond the page limit fails closed instead of pinning a
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1256,7 +1364,7 @@ test("lazy discovery follows has_more pagination using the last model as the cur
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(captured[0].model).toBe("gpt-6.10-luna");
@@ -1269,13 +1377,13 @@ test("an enabled Long latest alias resolves and can be selected", async () => {
   const captured: CodexBody[] = [];
   const inputs: RoutingInput[] = [];
   const upstream = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
-    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.10-luna"), aliasModel("gpt-6.10-astra")] });
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ models: [aliasModel("gpt-6.10-luna"), aliasModel("gpt-6.10-sol"), aliasModel("gpt-6.10-astra")] });
     const body = await req.json() as CodexBody;
     captured.push(body);
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const config = configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest", CODING_ROUTER_LONG_MODEL_CODEX: "astra:latest", CODING_ROUTER_LONG_MODEL_ENABLE: "true" });
+  const config = configFromEnv({ CODING_ROUTER_LONG_MODEL_ENABLE: "true" });
   const proxy = startProxy(config, { route: async input => { inputs.push(input); return result(input, "long", "low"); }, apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
@@ -1300,7 +1408,7 @@ test("lazy discovery follows Link rel=next pagination", async () => {
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
     expect(captured[0].model).toBe("gpt-6.10-luna");
@@ -1317,7 +1425,7 @@ test("cross-origin catalog pagination is refused and forwards nothing", async ()
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { authorization: "Bearer fake-auth", "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1343,7 +1451,7 @@ test("concurrent routing requests share one in-flight discovery and resolve iden
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const send = () => fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) }).then(r => r.text());
   try {
     await Promise.all([send(), send()]);
@@ -1370,7 +1478,7 @@ test("a failed paginated discovery is retried on the next request instead of pin
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const send = () => fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
   try {
     expect((await send()).status).toBe(502);
@@ -1392,7 +1500,7 @@ test("has_more without a usable continuation fails closed", async () => {
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1410,7 +1518,7 @@ test("metadata-only catalog entries without versions fail actionably through the
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);
@@ -1438,7 +1546,7 @@ test("an empty proxied /models after a failed discovery does not pin partial cat
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   const send = () => fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
   try {
     expect((await send()).status).toBe(502);
@@ -1466,7 +1574,7 @@ test("a proxied /models during in-flight discovery does not pin before paginatio
     return Response.json({ model: body.model, usage: { input_tokens_details: { cached_tokens: 0 } } });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const pending = fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     await Bun.sleep(30);
@@ -1487,7 +1595,7 @@ test("catalog pagination cycles fail closed with a distinct message", async () =
     return Response.json({ model: "should-not-run" });
   } });
   const base = `http://127.0.0.1:${upstream.port}`;
-  const proxy = startProxy(configFromEnv({ CODING_ROUTER_FAST_MODEL_CODEX: "luna:latest" }), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
+  const proxy = startProxy(latestFastConfig(), { route: async input => result(input, "fast", "low"), apiBaseURL: base, chatgptBaseURL: base, logDirectory: directory });
   try {
     const response = await fetch(`http://127.0.0.1:${proxy.port}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: AUTO_MODEL, input: [{ role: "user", content: "hello" }] }) });
     expect(response.status).toBe(502);

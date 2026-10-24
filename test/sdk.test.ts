@@ -3,6 +3,14 @@ import { configFromEnv } from "../src/config";
 import { candidatesFor } from "../src/proxy";
 import { createRouter } from "../src/router";
 
+/** Legacy fixture IDs: pin every Codex tier so no latest-alias discovery is triggered. */
+const pinnedCandidates = () => candidatesFor(configFromEnv({
+  CODING_ROUTER_FAST_MODEL_CODEX: "chatgpt-6-luna",
+  CODING_ROUTER_BALANCED_MODEL_CODEX: "chatgpt-6.1-sol",
+  CODING_ROUTER_STRONG_MODEL_CODEX: "chatgpt-6.1-sol",
+  CODING_ROUTER_LONG_MODEL_CODEX: "chatgpt-6-astra",
+}), new Map());
+
 test("TypeSafe SDK reads its native env variables and the logged request includes its resolved model", async () => {
   let body: Record<string, unknown> | undefined;
   let authorization: string | null = null;
@@ -17,7 +25,7 @@ test("TypeSafe SDK reads its native env variables and the logged request include
     process.env.TYPESAFE_API_KEY = "test-only-key";
     process.env.TYPESAFE_BASE_URL = `http://127.0.0.1:${server.port}`;
     process.env.TYPESAFE_DEFAULT_MODEL = "test-jev";
-    const result = await createRouter()({ prompt: "hi", currentTier: "strong", currentModel: "gpt-6.1-sol", contextTokens: 10, candidates: candidatesFor(configFromEnv({}), new Map()) });
+    const result = await createRouter()({ prompt: "hi", currentTier: "strong", currentModel: "gpt-6.1-sol", contextTokens: 10, candidates: pinnedCandidates() });
     expect(result.response?.answers.model.type).toBe("choice");
     expect(result.request.model).toBe("test-jev");
     expect(body?.model).toBe("test-jev");
@@ -41,7 +49,7 @@ test("caller cancellation via AbortSignal is distinguishable from timeout", asyn
     process.env.TYPESAFE_DEFAULT_MODEL = "test-jev";
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
-    const result = await createRouter()({ prompt: "test", currentTier: "fast", currentModel: "gpt-6-luna", contextTokens: 10, candidates: candidatesFor(configFromEnv({}), new Map()), callerOptions: { signal: controller.signal } });
+    const result = await createRouter()({ prompt: "test", currentTier: "fast", currentModel: "gpt-6-luna", contextTokens: 10, candidates: pinnedCandidates(), callerOptions: { signal: controller.signal } });
     expect(result.response).toBeNull();
     expect(result.error).toBe("Routing cancelled by caller");
     expect(result.aborted).toBe(true);
@@ -62,7 +70,7 @@ test("timeout still works when no caller signal is provided", async () => {
     process.env.TYPESAFE_API_KEY = "test-only-key";
     process.env.TYPESAFE_BASE_URL = `http://127.0.0.1:${server.port}`;
     process.env.TYPESAFE_DEFAULT_MODEL = "test-jev";
-    const result = await createRouter()({ prompt: "test", currentTier: "fast", currentModel: "gpt-6-luna", contextTokens: 10, candidates: candidatesFor(configFromEnv({}), new Map()) });
+    const result = await createRouter()({ prompt: "test", currentTier: "fast", currentModel: "gpt-6-luna", contextTokens: 10, candidates: pinnedCandidates() });
     expect(result.response).toBeNull();
     expect(result.error).toBeDefined();
     expect(result.error).not.toBe("Routing cancelled by caller");
@@ -85,7 +93,7 @@ test("already-aborted signal is detected as caller cancellation", async () => {
     process.env.TYPESAFE_DEFAULT_MODEL = "test-jev";
     const controller = new AbortController();
     controller.abort();
-    const result = await createRouter()({ prompt: "test", currentTier: "fast", currentModel: "gpt-6-luna", contextTokens: 10, candidates: candidatesFor(configFromEnv({}), new Map()), callerOptions: { signal: controller.signal } });
+    const result = await createRouter()({ prompt: "test", currentTier: "fast", currentModel: "gpt-6-luna", contextTokens: 10, candidates: pinnedCandidates(), callerOptions: { signal: controller.signal } });
     expect(result.response).toBeNull();
     expect(result.error).toBe("Routing cancelled by caller");
     expect(result.aborted).toBe(true);

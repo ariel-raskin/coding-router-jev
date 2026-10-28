@@ -492,6 +492,12 @@ The compiled launchers still require the separately installed and authenticated 
 
 ## How it works
 
+### Experimental local request telemetry
+
+Setting `JEV_TELEMETRY_FILE` to a local file path opts in to metadata-only JSONL for Codex proxy requests; it is disabled when unset. Keep the file outside shared repositories. Records contain generated launch, request, event and decision identifiers, timestamps, selected model and effort, provider-reported model when available, status, classifier token observations and available terminal provider token fields. They do not contain prompts, responses, headers, provider identifiers or credentials. File mode `0600` is requested where supported; Windows permissions depend on the parent directory ACL.
+
+Each forwarded request has a distinct request ID; retries are not automatically distinguished from other requests. Tool continuations are labeled only when identifiable. Decision links are inferred from router state and are not native Codex turn identifiers. Terminal usage is one provider-reported response snapshot, not a sum of stream updates. Conflicting terminal events produce no token values. Missing terminal events leave an unmatched start record; compact, failed and unsupported responses can have no usage. Input, cached input, output, reasoning output and total token fields can overlap. These observations do not establish subscription charges, savings, task success, or complete coverage.
+
 ### Codex
 
 Without `TYPESAFE_API_KEY`, the launcher reports that routing is disabled and starts ordinary Codex. With the key, it starts a proxy on `127.0.0.1` at an OS-assigned port, launches Codex with temporary provider settings, and stops the proxy when Codex exits. It passes `--no-daemon` to prevent another Codex session's shared daemon from reusing the wrong provider configuration. No permanent Codex configuration is edited. TypeSafe credentials are not passed to the Codex child process.

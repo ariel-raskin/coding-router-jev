@@ -22,10 +22,10 @@ export function createTelemetry(path?: string) {
     decision(decisionId: string, input: unknown, output: unknown) {
       emit({ kind: "routing_decision", event_id: randomUUID(), decision_id: decisionId, at: new Date().toISOString(), classifier_usage: { input_tokens: count(input), output_tokens: count(output) } });
     },
-    start(model: string | undefined, effort: string | undefined, decisionId?: string, requestKind = "other") {
+    start(model: string | undefined, effort: string | undefined, decisionId?: string, requestKind = "other", routingMode = "unknown") {
       const requestId = randomUUID();
-      const safeEffort = effort && ["none", "minimal", "low", "medium", "high", "xhigh"].includes(effort) ? effort : null;
-      emit({ kind: "request_start", event_id: randomUUID(), request_id: requestId, at: new Date().toISOString(), model: safeModel(model), effort: safeEffort, decision_id: decisionId ?? null, decision_link: decisionId ? "router_state_inferred" : "unavailable", request_kind: requestKind });
+      const safeEffort = effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) ? effort : null;
+      emit({ kind: "request_start", event_id: randomUUID(), request_id: requestId, at: new Date().toISOString(), model: safeModel(model), effort: safeEffort, decision_id: decisionId ?? null, decision_link: decisionId ? "router_state_inferred" : "unavailable", request_kind: requestKind, routing_mode: routingMode });
       return requestId;
     },
     finish(requestId: string, status: string, usage: TokenUsage | null, reportedModel?: unknown) {

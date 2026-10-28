@@ -371,9 +371,11 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
         let payload = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
         let prepared: Awaited<ReturnType<typeof prepare>> | undefined;
         let body: CodexBody | undefined;
+        let routingMode = "unknown";
         if (request.method === "POST" && /\/responses(?:\/compact)?$/.test(path)) {
           try { body = JSON.parse(new TextDecoder().decode(payload)); } catch { return Response.json({ error: { message: "Invalid JSON request" } }, { status: 400 }); }
           if (body && typeof body.model === "string") {
+            routingMode = body.model === AUTO_MODEL ? "automatic" : "explicit_model";
             prepared = await prepare(body, headers, path.endsWith("/compact"), request.signal);
             payload = new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer;
           }
@@ -381,7 +383,7 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
         if (prepared && telemetry.enabled) {
           const lastInput = Array.isArray(body?.input) ? body.input.at(-1) : undefined;
           const requestKind = path.endsWith("/compact") ? "compact" : lastInput && ["function_call_output", "custom_tool_call_output"].includes(lastInput.type ?? "") ? "tool_continuation" : "other";
-          telemetryRequest = telemetry.start(body?.model, body?.reasoning?.effort, prepared.decisionId, requestKind);
+          telemetryRequest = telemetry.start(body?.model, body?.reasoning?.effort, prepared.decisionId, requestKind, routingMode);
         }
         const response = await fetch(`${base.replace(/\/$/, "")}${path}${url.search}`, { method: request.method, headers, body: payload, signal: request.signal, redirect: "manual" });
         const responseHeaders = new Headers(response.headers);

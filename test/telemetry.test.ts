@@ -52,6 +52,16 @@ test("terminal usage survives downstream cancellation and later conflicts are fl
   expect(conflicts).toBe(1);
 });
 
+test("cancellation before terminal leaves usage unobserved", async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(frame({ type: "response.created" }))); } });
+  const observed: string[] = [];
+  const reader = observeStream(stream, "model", undefined, () => {}, status => observed.push(status)).getReader();
+  await reader.read();
+  await reader.cancel();
+  expect(observed).toEqual([]);
+});
+
 test("proxy writes only metadata for concurrent requests, retries, continuations and failures", async () => {
   const directory = await mkdtemp(join(tmpdir(), "jev-telemetry-"));
   const telemetryPath = join(directory, "telemetry.jsonl");
@@ -69,16 +79,19 @@ test("proxy writes only metadata for concurrent requests, retries, continuations
     await send([prompt, { type: "function_call_output", output: "private tool output" }]);
     await send([prompt], "model-b");
     await send([prompt], AUTO_MODEL, true);
+    await send([prompt]);
     const text = await readFile(telemetryPath, "utf8");
     expect(text).not.toContain("private");
     const records = text.trim().split("\n").map(line => JSON.parse(line));
     const starts = records.filter(record => record.kind === "request_start");
     const ends = records.filter(record => record.kind === "request_end");
-    expect(starts).toHaveLength(5);
-    expect(ends).toHaveLength(5);
-    expect(new Set(starts.map(record => record.request_id)).size).toBe(5);
+    expect(starts).toHaveLength(6);
+    expect(ends).toHaveLength(6);
+    expect(new Set(starts.map(record => record.request_id)).size).toBe(6);
     expect(starts.some(record => record.request_kind === "tool_continuation")).toBe(true);
     expect(starts.some(record => record.model === "model-b")).toBe(true);
+    expect(starts.filter(record => record.model === "model-b")[0].routing_mode).toBe("explicit_model");
+    expect(starts.filter(record => record.model === "model-a").every(record => record.routing_mode === "automatic")).toBe(true);
     expect(ends.filter(record => record.status === "http_failure")).toHaveLength(1);
     expect(ends.filter(record => record.status === "completed")[0].usage.cached_input_tokens).toBe(20);
     expect(ends.filter(record => record.status === "completed")[0].reported_model).toBe("reported-model");

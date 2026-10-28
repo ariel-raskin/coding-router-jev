@@ -31,5 +31,8 @@ export function createTelemetry(path?: string) {
     finish(requestId: string, status: string, usage: TokenUsage | null, reportedModel?: unknown) {
       emit({ kind: "request_end", event_id: randomUUID(), request_id: requestId, at: new Date().toISOString(), status, usage, reported_model: safeModel(reportedModel) });
     },
+    conflict(requestId: string) {
+      emit({ kind: "request_conflict", event_id: randomUUID(), request_id: requestId, at: new Date().toISOString() });
+    },
   };
 }

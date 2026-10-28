@@ -37,6 +37,21 @@ test("missing and failed terminals remain distinct from zero usage", async () =>
   expect(observed).toEqual([{ status: "incomplete", usage: null }, { status: "failed", usage: null }]);
 });
 
+test("terminal usage survives downstream cancellation and later conflicts are flagged", async () => {
+  const encoder = new TextEncoder();
+  const event = { type: "response.completed", response };
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(frame(event))); } });
+  const observed: string[] = [];
+  const reader = observeStream(stream, "model", undefined, () => {}, status => observed.push(status)).getReader();
+  await reader.read();
+  await reader.cancel();
+  expect(observed).toEqual(["completed"]);
+  let conflicts = 0;
+  const twoFrames = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(frame(event))); controller.enqueue(encoder.encode(frame({ type: "response.completed", response: { ...response, usage: { input_tokens: 999 } } }))); controller.close(); } });
+  await new Response(observeStream(twoFrames, "model", undefined, () => {}, () => {}, () => conflicts++)).text();
+  expect(conflicts).toBe(1);
+});
+
 test("proxy writes only metadata for concurrent requests, retries, continuations and failures", async () => {
   const directory = await mkdtemp(join(tmpdir(), "jev-telemetry-"));
   const telemetryPath = join(directory, "telemetry.jsonl");

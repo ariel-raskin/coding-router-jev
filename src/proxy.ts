@@ -431,7 +431,7 @@ export function startProxy(config: Config, options: { route?: Route; apiBaseURL?
             if (announced.size > 1000) announced.delete(announced.values().next().value!);
             return notice;
           } : undefined;
-          return new Response(observeStream(response.body, body!.model, getNotice, usage, finishTelemetry), { status: response.status, headers: responseHeaders });
+          return new Response(observeStream(response.body, body!.model, getNotice, usage, finishTelemetry, () => { if (telemetryRequest) telemetry.conflict(telemetryRequest); }), { status: response.status, headers: responseHeaders });
         }
         if (response.headers.get("content-type")?.includes("application/json")) {
           const data = await response.arrayBuffer();

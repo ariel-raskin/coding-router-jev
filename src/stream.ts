@@ -16,7 +16,7 @@ function noticeEvents(text: string): string {
     { type: "response.output_item.done", item },
   ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
 }
-export function observeStream(source: ReadableStream<Uint8Array>, model: string, notice: (() => string | undefined) | undefined, onUsage: (usage: Usage) => void, onTelemetry?: (status: string, usage: TokenUsage | null, reportedModel?: unknown) => void): ReadableStream<Uint8Array> {
+export function observeStream(source: ReadableStream<Uint8Array>, model: string, notice: (() => string | undefined) | undefined, onUsage: (usage: Usage) => void, onTelemetry?: (status: string, usage: TokenUsage | null, reportedModel?: unknown) => void, onConflict?: () => void): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let pending = "";
   let overflow = false;
@@ -26,6 +26,8 @@ export function observeStream(source: ReadableStream<Uint8Array>, model: string,
   let terminal: { status: string; usage: TokenUsage | null; reportedModel: unknown } | undefined;
   let terminalResponseId: string | undefined;
   let conflict = false;
+  let reported = false;
+  let conflictReported = false;
   return source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       if (!notified) {
@@ -65,7 +67,12 @@ export function observeStream(source: ReadableStream<Uint8Array>, model: string,
           }
         } catch {}
       }
+      if (conflict && reported && !conflictReported) { conflictReported = true; onConflict?.(); }
+      if (terminal && !reported) {
+        reported = true;
+        onTelemetry?.(conflict ? "conflicting_terminal_events" : terminal.status, conflict ? null : terminal.usage, conflict ? undefined : terminal.reportedModel);
+      }
     },
-    flush(controller) { if (prefix.length) controller.enqueue(prefix); onUsage(completed ?? { model, read: null, created: null }); onTelemetry?.(conflict ? "conflicting_terminal_events" : terminal?.status ?? "incomplete", conflict ? null : terminal?.usage ?? null, conflict ? undefined : terminal?.reportedModel); },
+    flush(controller) { if (prefix.length) controller.enqueue(prefix); onUsage(completed ?? { model, read: null, created: null }); if (!reported) onTelemetry?.("incomplete", null); },
   }));
 }
